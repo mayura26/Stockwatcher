@@ -55,7 +55,10 @@ class SwChart extends HTMLElement {
             <button type="button" data-res="M">M</button>
           </div>
         </div>
-        <div class="chart-host"></div>
+        <div class="chart-stage">
+          <div class="chart-host"></div>
+          <div class="chart-load" data-load hidden><span></span></div>
+        </div>
         <p class="chart-msg" data-msg></p>
         <form class="alert-form">
           <input name="level" inputmode="decimal" placeholder="Level" aria-label="Alert level">
@@ -157,6 +160,7 @@ class SwChart extends HTMLElement {
   }
 
   async loadBars() {
+    this.setLoading(true);
     this.setMsg('Loading history…');
     try {
       this.payload = await this.api.get('/api/bars?id=' + this.symbolId + '&resolution=' + this.resolution);
@@ -168,6 +172,8 @@ class SwChart extends HTMLElement {
       await this.paint();
     } catch (err) {
       this.setMsg(err.message);
+    } finally {
+      this.setLoading(false);
     }
   }
 
@@ -373,6 +379,13 @@ class SwChart extends HTMLElement {
   setMsg(text) {
     const el = this.querySelector('[data-msg]');
     if (el) el.textContent = text || '';
+  }
+
+  setLoading(on) {
+    const el = this.querySelector('[data-load]');
+    if (el) el.hidden = !on;
+    const stage = this.querySelector('.chart-stage');
+    if (stage) stage.setAttribute('aria-busy', on ? 'true' : 'false');
   }
 
   bindTimeScale() {
