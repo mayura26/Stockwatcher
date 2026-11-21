@@ -177,7 +177,10 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureOwned(); err != nil {
 		return err
 	}
-	return s.ensureFacts()
+	if err := s.ensureFacts(); err != nil {
+		return err
+	}
+	return s.ensureLogos()
 }
 
 // ensureRanges stores the expected band for the last completed session.
@@ -206,6 +209,18 @@ CREATE TABLE IF NOT EXISTS facts (
   earnings_date TEXT,
   earnings_hour TEXT,
   fetched_at INTEGER NOT NULL
+)`)
+	return err
+}
+
+// ensureLogos stores one fetched mark per symbol. A null body is a recorded miss.
+func (s *Store) ensureLogos() error {
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS symbol_logos (
+  symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+  body BLOB,
+  media_type TEXT,
+  checked_at INTEGER NOT NULL
 )`)
 	return err
 }
@@ -406,30 +421,32 @@ const (
 )
 
 type Row struct {
-	ID           int64     `json:"id"`
-	Display      string    `json:"display"`
-	Name         string    `json:"name"`
-	AssetClass   string    `json:"asset_class"`
-	Price        *float64  `json:"price"`
-	ChangeD      *float64  `json:"change_d"`
-	ChangeW      *float64  `json:"change_w"`
-	ChangeM      *float64  `json:"change_m"`
-	ChangeH1     *float64  `json:"change_1h"`
-	ChangeH4     *float64  `json:"change_4h"`
-	Sparkline    []float64 `json:"sparkline,omitempty"`
-	ExtSession   string    `json:"ext_session,omitempty"`
-	ExtPct       *float64  `json:"ext_pct,omitempty"`
-	AsOf         *int64    `json:"as_of"`
-	Position     int       `json:"position"`
-	RangeLow     *float64  `json:"range_low,omitempty"`
-	RangeHigh    *float64  `json:"range_high,omitempty"`
-	Owned        bool      `json:"owned,omitempty"`
-	MarketCap    *float64  `json:"market_cap,omitempty"`
-	PeTTM        *float64  `json:"pe_ttm,omitempty"`
-	RevenueTTM   *float64  `json:"revenue_ttm,omitempty"`
-	EarningsTTM  *float64  `json:"earnings_ttm,omitempty"`
-	EarningsDate string    `json:"earnings_date,omitempty"`
-	EarningsHour string    `json:"earnings_hour,omitempty"`
+	ID             int64     `json:"id"`
+	Display        string    `json:"display"`
+	Name           string    `json:"name"`
+	AssetClass     string    `json:"asset_class"`
+	ProviderSymbol string    `json:"provider_symbol"`
+	Price          *float64  `json:"price"`
+	ChangeD        *float64  `json:"change_d"`
+	ChangeW        *float64  `json:"change_w"`
+	ChangeM        *float64  `json:"change_m"`
+	ChangeH1       *float64  `json:"change_1h"`
+	ChangeH4       *float64  `json:"change_4h"`
+	Sparkline      []float64 `json:"sparkline,omitempty"`
+	ExtSession     string    `json:"ext_session,omitempty"`
+	ExtPct         *float64  `json:"ext_pct,omitempty"`
+	AsOf           *int64    `json:"as_of"`
+	Position       int       `json:"position"`
+	RangeLow       *float64  `json:"range_low,omitempty"`
+	RangeHigh      *float64  `json:"range_high,omitempty"`
+	Owned          bool      `json:"owned,omitempty"`
+	MarketCap      *float64  `json:"market_cap,omitempty"`
+	PeTTM          *float64  `json:"pe_ttm,omitempty"`
+	RevenueTTM     *float64  `json:"revenue_ttm,omitempty"`
+	EarningsTTM    *float64  `json:"earnings_ttm,omitempty"`
+	EarningsDate   string    `json:"earnings_date,omitempty"`
+	EarningsHour   string    `json:"earnings_hour,omitempty"`
+	HasLogo        bool      `json:"has_logo,omitempty"`
 }
 
 type Group struct {
@@ -452,10 +469,11 @@ type Board struct {
 func (s *Store) Board(ctx context.Context) (Board, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT g.id, g.name, g.color, g.icon, g.position,
-       s.id, s.display, s.name, s.asset_class,
+       s.id, s.display, s.name, s.asset_class, s.provider_symbol,
        q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
        q.ext_session, q.ext_pct, gs.position, r.low, r.high,
-       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour
+       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour,
+       EXISTS(SELECT 1 FROM symbol_logos l WHERE l.symbol_id = s.id AND l.body IS NOT NULL)
 FROM groups g
 LEFT JOIN group_symbols gs ON gs.group_id = g.id
 LEFT JOIN symbols s ON s.id = gs.symbol_id
@@ -475,6 +493,7 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			gname, gcolor, gicon string
 			sid                  sql.NullInt64
 			display, name, cls   sql.NullString
+			provider             sql.NullString
 			price, cd, cw, cm    sql.NullFloat64
 			h1, h4               sql.NullFloat64
 			spark                sql.NullString
@@ -485,8 +504,9 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			rlow, rhigh          sql.NullFloat64
 			cap, pe, rev, earn   sql.NullFloat64
 			earnDate, earnHour   sql.NullString
+			has                  int
 		)
-		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &spos, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour); err != nil {
+		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &provider, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &spos, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
 			return Board{}, err
 		}
 		i, ok := index[gid]
@@ -503,25 +523,27 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			pos = int(spos.Int64)
 		}
 		row := Row{
-			ID:         sid.Int64,
-			Display:    display.String,
-			Name:       name.String,
-			AssetClass: cls.String,
-			Price:      floatPtr(price),
-			ChangeD:    floatPtr(cd),
-			ChangeW:    floatPtr(cw),
-			ChangeM:    floatPtr(cm),
-			ChangeH1:   floatPtr(h1),
-			ChangeH4:   floatPtr(h4),
-			Sparkline:  decodeSpark(spark),
-			AsOf:       intPtr(asOf),
-			ExtSession: extSess.String,
-			ExtPct:     floatPtr(extPct),
-			Position:   pos,
-			RangeLow:   floatPtr(rlow),
-			RangeHigh:  floatPtr(rhigh),
+			ID:             sid.Int64,
+			Display:        display.String,
+			Name:           name.String,
+			AssetClass:     cls.String,
+			ProviderSymbol: provider.String,
+			Price:          floatPtr(price),
+			ChangeD:        floatPtr(cd),
+			ChangeW:        floatPtr(cw),
+			ChangeM:        floatPtr(cm),
+			ChangeH1:       floatPtr(h1),
+			ChangeH4:       floatPtr(h4),
+			Sparkline:      decodeSpark(spark),
+			AsOf:           intPtr(asOf),
+			ExtSession:     extSess.String,
+			ExtPct:         floatPtr(extPct),
+			Position:       pos,
+			RangeLow:       floatPtr(rlow),
+			RangeHigh:      floatPtr(rhigh),
 		}
 		setFacts(&row, cap, pe, rev, earn, earnDate, earnHour)
+		row.HasLogo = has != 0
 		board.Groups[i].Rows = append(board.Groups[i].Rows, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -613,10 +635,11 @@ func (s *Store) notableGroup(ctx context.Context, groups []Group, owned []Row) (
 
 func (s *Store) alertOnlyRows(ctx context.Context) ([]Row, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT s.id, s.display, s.name, s.asset_class,
+SELECT s.id, s.display, s.name, s.asset_class, s.provider_symbol,
        q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
        q.ext_session, q.ext_pct, r.low, r.high,
-       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour
+       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour,
+       EXISTS(SELECT 1 FROM symbol_logos l WHERE l.symbol_id = s.id AND l.body IS NOT NULL)
 FROM symbols s
 LEFT JOIN quotes q ON q.symbol_id = s.id
 LEFT JOIN ranges r ON r.symbol_id = s.id
@@ -640,8 +663,9 @@ ORDER BY s.id`)
 			extPct              sql.NullFloat64
 			cap, pe, rev, earn  sql.NullFloat64
 			earnDate, earnHour  sql.NullString
+			has                 int
 		)
-		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour); err != nil {
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &row.ProviderSymbol, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
 			return nil, err
 		}
 		row.Price = floatPtr(price)
@@ -657,6 +681,7 @@ ORDER BY s.id`)
 		row.RangeLow = floatPtr(rlow)
 		row.RangeHigh = floatPtr(rhigh)
 		setFacts(&row, cap, pe, rev, earn, earnDate, earnHour)
+		row.HasLogo = has != 0
 		out = append(out, row)
 	}
 	return out, rows.Err()
@@ -664,10 +689,11 @@ ORDER BY s.id`)
 
 func (s *Store) ownedRows(ctx context.Context) ([]Row, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT s.id, s.display, s.name, s.asset_class,
+SELECT s.id, s.display, s.name, s.asset_class, s.provider_symbol,
        q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
        q.ext_session, q.ext_pct, r.low, r.high,
-       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour
+       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour,
+       EXISTS(SELECT 1 FROM symbol_logos l WHERE l.symbol_id = s.id AND l.body IS NOT NULL)
 FROM owned o
 JOIN symbols s ON s.id = o.symbol_id
 LEFT JOIN quotes q ON q.symbol_id = s.id
@@ -690,8 +716,9 @@ ORDER BY o.position, s.id`)
 			extPct              sql.NullFloat64
 			cap, pe, rev, earn  sql.NullFloat64
 			earnDate, earnHour  sql.NullString
+			has                 int
 		)
-		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour); err != nil {
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &row.ProviderSymbol, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
 			return nil, err
 		}
 		row.Price = floatPtr(price)
@@ -707,6 +734,7 @@ ORDER BY o.position, s.id`)
 		row.RangeLow = floatPtr(rlow)
 		row.RangeHigh = floatPtr(rhigh)
 		setFacts(&row, cap, pe, rev, earn, earnDate, earnHour)
+		row.HasLogo = has != 0
 		row.Owned = true
 		out = append(out, row)
 	}
@@ -1279,6 +1307,68 @@ func (s *Store) Quote(ctx context.Context, symbolID int64) (QuoteRow, error) {
 	q.ExtSession = extSess.String
 	q.ExtPct = floatPtr(extPct)
 	return q, nil
+}
+
+// Logo is a cached mark. Body is empty when the row is only a recorded miss.
+type Logo struct {
+	Body      []byte
+	MediaType string
+}
+
+// PutLogo writes a fetched image, or a miss when body is empty.
+func (s *Store) PutLogo(ctx context.Context, symbolID int64, body []byte, mediaType string, checkedAt int64) error {
+	var blob, media any
+	if len(body) > 0 {
+		blob = body
+		media = mediaType
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO symbol_logos(symbol_id, body, media_type, checked_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(symbol_id) DO UPDATE SET
+  body = excluded.body,
+  media_type = excluded.media_type,
+  checked_at = excluded.checked_at`, symbolID, blob, media, checkedAt)
+	return err
+}
+
+// Logo returns the stored image. A miss and a symbol that has never been checked are both not found.
+func (s *Store) Logo(ctx context.Context, symbolID int64) (Logo, error) {
+	var logo Logo
+	var media sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT body, media_type FROM symbol_logos WHERE symbol_id = ? AND body IS NOT NULL`, symbolID).Scan(&logo.Body, &media)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Logo{}, ErrNotFound
+	}
+	if err != nil {
+		return Logo{}, err
+	}
+	logo.MediaType = media.String
+	return logo, nil
+}
+
+// SymbolsNeedingLogo is every symbol with no cached mark, or a miss older than olderThan.
+// Missing rows come first, then the oldest check, then the lowest id.
+func (s *Store) SymbolsNeedingLogo(ctx context.Context, olderThan int64) ([]Symbol, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, s.asset_class, s.display, s.provider_symbol, s.name
+FROM symbols s
+LEFT JOIN symbol_logos l ON l.symbol_id = s.id
+WHERE l.symbol_id IS NULL OR (l.body IS NULL AND l.checked_at < ?)
+ORDER BY CASE WHEN l.symbol_id IS NULL THEN 0 ELSE 1 END, l.checked_at, s.id`, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Symbol
+	for rows.Next() {
+		var sym Symbol
+		if err := rows.Scan(&sym.ID, &sym.AssetClass, &sym.Display, &sym.ProviderSymbol, &sym.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, sym)
+	}
+	return out, rows.Err()
 }
 
 // UpsertFacts replaces the company snapshot. A failed fetch must not call this,

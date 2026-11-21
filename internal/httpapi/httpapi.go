@@ -47,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/groups/{id}/symbols", s.auth(s.addSymbol))
 	mux.HandleFunc("DELETE /api/groups/{id}/symbols/{symbolId}", s.auth(s.removeSymbol))
 	mux.HandleFunc("PUT /api/groups/{id}/symbols/order", s.auth(s.reorderSymbols))
+	mux.HandleFunc("GET /api/symbols/{id}/logo", s.auth(s.logo))
 	mux.HandleFunc("PUT /api/owned/{symbolId}", s.auth(s.ownSymbol))
 	mux.HandleFunc("DELETE /api/owned/{symbolId}", s.auth(s.unownSymbol))
 	mux.HandleFunc("GET /api/search", s.auth(s.search))
@@ -188,6 +189,23 @@ func (s *Server) unownSymbol(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) logo(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	logo, err := s.Store.Logo(r.Context(), id)
+	if mapErr(w, err) {
+		return
+	}
+	if logo.MediaType != "" {
+		w.Header().Set("Content-Type", logo.MediaType)
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(logo.Body)
+}
+
 func (s *Server) reorderGroups(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IDs []int64 `json:"ids"`
@@ -281,12 +299,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	)
 	switch class {
 	case market.Stock:
-		hits, err = s.Sync.Finnhub.Search(r.Context(), q)
-		if err != nil && !errors.Is(err, finnhub.ErrNoKey) {
-			slog.Error("search", "err", err)
-			hits = nil
-		}
-		hits = withManualStock(hits, q)
+		hits, err = s.stockSearch(r, q)
 		if errors.Is(err, finnhub.ErrNoKey) && len(hits) == 0 {
 			writeErr(w, http.StatusBadRequest, "FINNHUB_API_KEY is not set")
 			return
@@ -312,6 +325,40 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		hits = []market.Hit{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
+}
+
+// stockSearch asks Finnhub first. Yahoo runs only when that list is empty.
+// The typed US ticker is offered only when both sources are empty, so a name
+// such as "samsung" is not turned into a fake ticker that hides Yahoo.
+func (s *Server) stockSearch(r *http.Request, q string) ([]market.Hit, error) {
+	var (
+		hits []market.Hit
+		err  error
+	)
+	if s.Sync == nil || s.Sync.Finnhub == nil {
+		err = finnhub.ErrNoKey
+	} else {
+		hits, err = s.Sync.Finnhub.Search(r.Context(), q)
+		if err != nil && !errors.Is(err, finnhub.ErrNoKey) {
+			slog.Error("search", "err", err)
+			hits = nil
+		}
+	}
+	if len(hits) == 0 && s.Sync != nil && s.Sync.Yahoo != nil {
+		yh, yerr := s.Sync.Yahoo.Search(r.Context(), q)
+		if yerr != nil {
+			slog.Error("search", "err", yerr)
+			if err == nil {
+				err = yerr
+			}
+		} else if len(yh) > 0 {
+			hits = yh
+		}
+	}
+	if len(hits) == 0 {
+		hits = withManualStock(nil, q)
+	}
+	return hits, err
 }
 
 func withManualStock(hits []market.Hit, q string) []market.Hit {
@@ -386,14 +433,15 @@ func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Sym
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"symbol": map[string]any{
-			"id":          sym.ID,
-			"display":     sym.Display,
-			"name":        sym.Name,
-			"asset_class": sym.AssetClass,
-			"price":       price,
-			"change_d":    changeD,
-			"ext_session": extSession,
-			"ext_pct":     extPct,
+			"id":              sym.ID,
+			"display":         sym.Display,
+			"name":            sym.Name,
+			"asset_class":     sym.AssetClass,
+			"provider_symbol": sym.ProviderSymbol,
+			"price":           price,
+			"change_d":        changeD,
+			"ext_session":     extSession,
+			"ext_pct":         extPct,
 		},
 		"resolution": res,
 		"bars":       candles,

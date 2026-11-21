@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,8 @@ import (
 	"stockwatcher/internal/store"
 )
 
+var errStoreBars = errors.New("store bars")
+
 // Syncer refreshes quotes and bars, then evaluates price crosses.
 type Syncer struct {
 	Store   *store.Store
@@ -27,6 +30,7 @@ type Syncer struct {
 	Binance *binance.Client
 	Push    *push.Sender
 	Now     func() time.Time
+	HTTP    *http.Client
 
 	mu       sync.Mutex
 	inflight map[int64]chan struct{}
@@ -64,6 +68,9 @@ func (s *Syncer) Enqueue(id int64) {
 		if err := s.RefreshFacts(ctx, id); err != nil {
 			slog.Error("facts", "symbol", id, "err", err)
 		}
+		if err := s.EnsureLogo(ctx, id); err != nil {
+			slog.Error("logo", "symbol", id, "err", err)
+		}
 	}()
 }
 
@@ -76,17 +83,20 @@ func (s *Syncer) RefreshQuote(ctx context.Context, id int64) error {
 	var q market.Quote
 	switch sym.AssetClass {
 	case market.Future:
-		quote, bars, err := s.Yahoo.Chart(ctx, sym.ProviderSymbol, "5d", false)
+		quote, _, err := s.storeYahooChart(ctx, id, sym.ProviderSymbol, false)
 		if err != nil {
 			return err
 		}
 		q = quote
-		if len(bars) > 0 {
-			if err := s.Store.UpsertBars(ctx, id, bars); err != nil {
+	case market.Stock:
+		if yahooListed(sym.ProviderSymbol) {
+			quote, _, err := s.storeYahooChart(ctx, id, sym.ProviderSymbol, true)
+			if err != nil {
 				return err
 			}
+			q = quote
+			break
 		}
-	case market.Stock:
 		if s.Finnhub == nil || !s.Finnhub.Enabled() {
 			return finnhub.ErrNoKey
 		}
@@ -249,6 +259,12 @@ func (s *Syncer) fetchBars(ctx context.Context, class, provider string, full boo
 	case market.Future:
 		return s.Yahoo.DailyBars(ctx, provider, false, full)
 	case market.Stock:
+		if yahooListed(provider) {
+			if s.Yahoo == nil {
+				return nil, fmt.Errorf("yahoo unavailable")
+			}
+			return s.Yahoo.DailyBars(ctx, provider, true, full)
+		}
 		if s.stockCandles(ctx) {
 			return s.Finnhub.DailyBars(ctx, provider, full)
 		}
@@ -256,6 +272,44 @@ func (s *Syncer) fetchBars(ctx context.Context, class, provider string, full boo
 	default:
 		return nil, fmt.Errorf("unknown asset class %s", class)
 	}
+}
+
+func yahooListed(provider string) bool {
+	return strings.Contains(provider, ".")
+}
+
+func (s *Syncer) storeYahooChart(ctx context.Context, id int64, provider string, adjust bool) (market.Quote, bool, error) {
+	if s.Yahoo == nil {
+		return market.Quote{}, false, fmt.Errorf("yahoo unavailable")
+	}
+	q, bars, err := s.Yahoo.Chart(ctx, provider, "5d", adjust)
+	if err != nil {
+		return market.Quote{}, false, err
+	}
+	if len(bars) == 0 {
+		return q, false, nil
+	}
+	if err := s.Store.UpsertBars(ctx, id, bars); err != nil {
+		return market.Quote{}, false, fmt.Errorf("%w: %s", errStoreBars, err)
+	}
+	return q, true, nil
+}
+
+func (s *Syncer) pullYahoo(ctx context.Context, sym store.TickSymbol, adjust bool, quotes map[int64]market.Quote, barsTouched map[int64]bool) error {
+	q, touched, err := s.storeYahooChart(ctx, sym.ID, sym.ProviderSymbol, adjust)
+	if err != nil {
+		if errors.Is(err, errStoreBars) {
+			return err
+		}
+		slog.Error("yahoo quote", "symbol", sym.ProviderSymbol, "err", err)
+		return nil
+	}
+	s.attachIntraday(ctx, sym.AssetClass, sym.ProviderSymbol, &q)
+	quotes[sym.ID] = q
+	if touched {
+		barsTouched[sym.ID] = true
+	}
+	return nil
 }
 
 func (s *Syncer) stockCandles(ctx context.Context) bool {
@@ -336,7 +390,15 @@ func (s *Syncer) Tick(ctx context.Context) error {
 			slog.Error("facts", "err", err)
 		}
 	}
-	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails, "ranges", ranges, "facts", facts)
+	logos, err := s.refreshLogos(ctx)
+	if err != nil {
+		if errors.Is(err, finnhub.ErrRateLimit) {
+			slog.Warn("logo rate limit")
+		} else {
+			slog.Error("logo", "err", err)
+		}
+	}
+	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails, "ranges", ranges, "facts", facts, "logos", logos)
 	return nil
 }
 
@@ -349,7 +411,7 @@ func (s *Syncer) RefreshFacts(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if sym.AssetClass != market.Stock || s.Finnhub == nil || !s.Finnhub.Enabled() {
+	if sym.AssetClass != market.Stock || yahooListed(sym.ProviderSymbol) || s.Finnhub == nil || !s.Finnhub.Enabled() {
 		return nil
 	}
 	marketCap, pe, err := s.Finnhub.Metric(ctx, sym.ProviderSymbol)
@@ -374,7 +436,7 @@ func (s *Syncer) refreshStaleFact(ctx context.Context, symbols []store.TickSymbo
 	}
 	ids := make([]int64, 0, len(symbols))
 	for _, sym := range symbols {
-		if sym.AssetClass == market.Stock {
+		if sym.AssetClass == market.Stock && !yahooListed(sym.ProviderSymbol) {
 			ids = append(ids, sym.ID)
 		}
 	}
@@ -429,7 +491,7 @@ func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) 
 	barsTouched := map[int64]bool{}
 	var mu sync.Mutex
 
-	var futures, cryptos, stocks []store.TickSymbol
+	var futures, cryptos, stocks, yahooStocks []store.TickSymbol
 	for _, sym := range symbols {
 		switch sym.AssetClass {
 		case market.Future:
@@ -437,25 +499,22 @@ func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) 
 		case market.Crypto:
 			cryptos = append(cryptos, sym)
 		case market.Stock:
-			stocks = append(stocks, sym)
+			if yahooListed(sym.ProviderSymbol) {
+				yahooStocks = append(yahooStocks, sym)
+			} else {
+				stocks = append(stocks, sym)
+			}
 		}
 	}
 
 	for _, sym := range futures {
-		q, bars, err := s.Yahoo.Chart(ctx, sym.ProviderSymbol, "5d", false)
-		if err != nil {
-			slog.Error("yahoo quote", "symbol", sym.ProviderSymbol, "err", err)
-			continue
+		if err := s.pullYahoo(ctx, sym, false, quotes, barsTouched); err != nil {
+			return nil, nil, err
 		}
-		s.attachIntraday(ctx, sym.AssetClass, sym.ProviderSymbol, &q)
-		mu.Lock()
-		quotes[sym.ID] = q
-		mu.Unlock()
-		if len(bars) > 0 {
-			if err := s.Store.UpsertBars(ctx, sym.ID, bars); err != nil {
-				return nil, nil, err
-			}
-			barsTouched[sym.ID] = true
+	}
+	for _, sym := range yahooStocks {
+		if err := s.pullYahoo(ctx, sym, true, quotes, barsTouched); err != nil {
+			return nil, nil, err
 		}
 	}
 

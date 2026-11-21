@@ -176,6 +176,7 @@ class SwApp extends HTMLElement {
       flashes: this.flashes,
       editing: this.editing,
       armed: this.board?.armed_alerts || 0,
+      loadLogo: (id) => this.api.blob('/api/symbols/' + id + '/logo'),
     });
     this.flashes = new Map();
   }

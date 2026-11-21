@@ -1,4 +1,4 @@
-import { formatClock, formatCompact, formatDay, formatPE, formatPct, formatPrice, pctClass, priceTone } from './format.js';
+import { formatClock, formatCompact, formatDay, formatPE, formatPct, formatPrice, pctClass } from './format.js';
 
 const HOLD_MS = 400;
 const HOLD_SLOP = 10;
@@ -46,6 +46,11 @@ class SwBoard extends HTMLElement {
     this.sheetOpen = false;
     this.openChanges = new Set();
     this.closedFolds = loadFolds();
+    if (!this.logoURLs) {
+      this.logoURLs = new Map();
+      this.logoPending = new Set();
+      this.logoFailed = new Set();
+    }
     this.innerHTML = `
       <header class="top">
         <div class="top-line">
@@ -90,9 +95,14 @@ class SwBoard extends HTMLElement {
   disconnectedCallback() {
     window.removeEventListener('keydown', this.onKey);
     this.finishDrag(false);
+    for (const url of this.logoURLs?.values() || []) URL.revokeObjectURL(url);
+    this.logoURLs = null;
+    this.logoPending = null;
+    this.logoFailed = null;
   }
 
-  setState({ board, groupId, flashes, editing, armed }) {
+  setState({ board, groupId, flashes, editing, armed, loadLogo }) {
+    if (loadLogo) this.loadLogo = loadLogo;
     if (this.drag?.active) return;
     if (this.drag) this.finishDrag(false);
     const y = window.scrollY;
@@ -227,14 +237,16 @@ class SwBoard extends HTMLElement {
     const expanded = open ? 'true' : 'false';
     const mark = row.owned ? `<span class="owned-mark" role="img" aria-label="Owned">${starSVG()}</span>` : '';
     const name = `<button type="button" class="card-name" data-expand="${row.id}" aria-expanded="${expanded}">
+          ${this.avatarHTML(row)}
           <span class="ident">
             <span class="sym">${escapeHTML(row.display)}${mark}</span>
             <span class="sub">${escapeHTML(row.name || '')}</span>
           </span>
         </button>`;
     const price = `<button type="button" class="card-px" data-expand="${row.id}" aria-expanded="${expanded}">
-          <span class="px num ${priceTone(row.change_d)}">${formatPrice(row.price)}</span>
-          <span class="day">${extLine(row)}${chg(row.change_d)}</span>
+          <span class="px num">${formatPrice(row.price)}</span>
+          ${chg(row.change_d)}
+          ${extLine(row)}
         </button>`;
     const more = open ? `<div class="more">${ownButton(row)}${rangeMeter(row)}<div class="more-chgs">
           <span class="more-cell"><span class="chg-h">1H</span>${chg(row.change_1h)}</span>
@@ -248,6 +260,33 @@ class SwBoard extends HTMLElement {
         </span>` : '';
     const remove = fixed ? '' : `<button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>`;
     return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}${fixed ? ' is-auto' : ''}" data-symbol="${row.id}">${name}${sparkHit(row, this.editing)}${price}${remove}${more}${moves}</div>`;
+  }
+
+  avatarHTML(row) {
+    const url = this.logoURLs.get(row.id);
+    if (!url && row.has_logo) this.wantLogo(row.id);
+    const inner = url ? `<img src="${url}" alt="">` : escapeHTML(monogram(row.display));
+    return `<span class="avatar" data-avatar="${row.id}" aria-hidden="true">${inner}</span>`;
+  }
+
+  wantLogo(id) {
+    if (!this.loadLogo || this.logoPending.has(id) || this.logoFailed.has(id) || this.logoURLs.has(id)) return;
+    this.logoPending.add(id);
+    this.loadLogo(id).then((blob) => {
+      if (!this.logoURLs) return;
+      if (!blob || !blob.size) throw new Error('empty');
+      const url = URL.createObjectURL(blob);
+      const prev = this.logoURLs.get(id);
+      if (prev) URL.revokeObjectURL(prev);
+      this.logoURLs.set(id, url);
+      for (const node of this.querySelectorAll(`[data-avatar="${id}"]`)) {
+        node.innerHTML = `<img src="${url}" alt="">`;
+      }
+    }).catch(() => {
+      this.logoFailed.add(id);
+    }).finally(() => {
+      this.logoPending.delete(id);
+    });
   }
 
   openGroupSheet(mode) {
@@ -675,6 +714,18 @@ function nextColor(groups) {
     }
   }
   return pick;
+}
+
+function monogram(display) {
+  const s = String(display || '').replace(/\s+/g, '');
+  if (!s) return '·';
+  if (s.length <= 3) return s;
+  return s.slice(0, 1);
+}
+
+function yahooMark(row) {
+  if (!row || row.asset_class !== 'stock' || !String(row.provider_symbol || '').includes('.')) return '';
+  return '<span class="yahoo-mark">Yahoo</span>';
 }
 
 function chg(n) {

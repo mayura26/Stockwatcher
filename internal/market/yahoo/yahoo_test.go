@@ -3,6 +3,7 @@ package yahoo
 import (
 	"math"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +141,41 @@ func TestParseCandles(t *testing.T) {
 	}
 	if bars[1].OpenUnix != 1700000300 || bars[1].Open != 11 || bars[1].Close != 11 {
 		t.Fatalf("second %+v", bars[1])
+	}
+}
+
+func TestParseSearchKeepsEquityAndETF(t *testing.T) {
+	raw := []byte(`{"quotes":[
+		{"symbol":"005930.KS","shortname":"Samsung Electronics","longname":"Samsung Electronics Co., Ltd.","quoteType":"EQUITY","exchDisp":"KSE"},
+		{"symbol":"000660.KS","shortname":"SK hynix","longname":"SK hynix Inc.","quoteType":"EQUITY","exchDisp":"KSE"},
+		{"symbol":"DRAM","shortname":"Roundhill Memory","quoteType":"ETF","exchDisp":"NasdaqGM"},
+		{"symbol":"ES=F","shortname":"E-mini","quoteType":"FUTURE","exchDisp":"CME"},
+		{"symbol":"BTC-USD","shortname":"Bitcoin","quoteType":"CRYPTOCURRENCY","exchDisp":"CCC"},
+		{"symbol":"005930.KS","shortname":"dup","quoteType":"EQUITY","exchDisp":"KSE"}
+	]}`)
+	hits, err := ParseSearch(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("%+v", hits)
+	}
+	if hits[0].ProviderSymbol != "005930.KS" || hits[0].Display != "005930.KS" || hits[0].AssetClass != market.Stock || hits[0].Name != "Samsung Electronics Co., Ltd. · KSE" {
+		t.Fatalf("samsung %+v", hits[0])
+	}
+	if hits[1].ProviderSymbol != "000660.KS" || hits[1].Name != "SK hynix Inc. · KSE" {
+		t.Fatalf("hynix %+v", hits[1])
+	}
+	if hits[2].ProviderSymbol != "DRAM" || hits[2].Name != "Roundhill Memory · NasdaqGM" {
+		t.Fatalf("etf %+v", hits[2])
+	}
+	long := strings.Repeat("가", 90)
+	cut, err := ParseSearch([]byte(`{"quotes":[{"symbol":"000660.KS","longname":"` + long + `","quoteType":"EQUITY","exchDisp":"KSE"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len([]rune(cut[0].Name)) != 80 || !strings.HasSuffix(cut[0].Name, " · KSE") {
+		t.Fatalf("truncated %q (%d)", cut[0].Name, len([]rune(cut[0].Name)))
 	}
 }
 

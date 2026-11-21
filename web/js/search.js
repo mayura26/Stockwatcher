@@ -54,7 +54,7 @@ class SwSearch extends HTMLElement {
     const hint = this.querySelector('.hint');
     const results = this.querySelector('.results');
     if (this.assetClass === 'stock' && q.length < 1) {
-      hint.textContent = 'Type a US ticker. AAPL works even if search is quiet.';
+      hint.textContent = 'Type a ticker or company. AAPL works even if search is quiet.';
       results.innerHTML = '';
       return;
     }
@@ -69,7 +69,7 @@ class SwSearch extends HTMLElement {
       }
       results.innerHTML = hits.map((hit) => `
         <button type="button" class="result" data-hit="${escapeAttr(JSON.stringify(hit))}">
-          <span class="sym">${escapeHTML(hit.display)}</span>
+          <span class="sym">${escapeHTML(hit.display)}${yahooMark(hit)}</span>
           <span class="sub">${escapeHTML(hit.name || hit.provider_symbol)}</span>
         </button>`).join('');
     } catch (err) {
@@ -80,6 +80,11 @@ class SwSearch extends HTMLElement {
   emit(detail) {
     this.dispatchEvent(new CustomEvent('sw-action', { bubbles: true, detail }));
   }
+}
+
+function yahooMark(hit) {
+  if (!hit || hit.asset_class !== 'stock' || !String(hit.provider_symbol || '').includes('.')) return '';
+  return '<span class="yahoo-mark">Yahoo</span>';
 }
 
 function escapeHTML(s) {

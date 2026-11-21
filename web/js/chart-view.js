@@ -41,7 +41,7 @@ class SwChart extends HTMLElement {
         <header class="top">
           <button type="button" class="back" data-back>Back</button>
           <div>
-            <div class="sym" data-display></div>
+            <div class="sym"><span data-display></span><span class="yahoo-mark" data-yahoo hidden>Yahoo</span></div>
             <div class="sub" data-name></div>
           </div>
           <div class="px-block">
@@ -195,6 +195,8 @@ class SwChart extends HTMLElement {
     const bars = this.payload?.bars || [];
     const shown = price ?? (bars.length ? bars[bars.length - 1].close : null);
     this.querySelector('[data-display]').textContent = sym.display || '';
+    const yahoo = this.querySelector('[data-yahoo]');
+    if (yahoo) yahoo.hidden = !(sym.asset_class === 'stock' && String(sym.provider_symbol || '').includes('.'));
     this.querySelector('[data-name]').textContent = sym.name || '';
     const px = this.querySelector('[data-price]');
     px.textContent = formatPrice(shown);

@@ -16,8 +16,9 @@ import (
 
 const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-// Client reads Yahoo's chart endpoint. It is used for CME futures quotes and
-// for daily bars (futures, and US stocks when Finnhub candles are unavailable).
+// Client reads Yahoo's chart and search endpoints. Charts cover CME futures,
+// daily bars, and listings Finnhub does not quote. Search is the fallback
+// when a US stock query has no hits.
 type Client struct {
 	HTTP *http.Client
 	Base string
@@ -114,6 +115,96 @@ func (c *Client) DailyBars(ctx context.Context, symbol string, adjust, full bool
 	}
 	_, bars, err := c.Chart(ctx, symbol, rng, adjust)
 	return bars, err
+}
+
+// Search looks up equities and ETFs. An empty query returns no hits.
+func (c *Client) Search(ctx context.Context, q string) ([]market.Hit, error) {
+	if c == nil {
+		return nil, fmt.Errorf("yahoo unavailable")
+	}
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return nil, nil
+	}
+	c.pace()
+	u := c.base() + "/v1/finance/search?q=" + url.QueryEscape(q) + "&quotesCount=20&newsCount=0"
+	body, err := c.fetch(ctx, q, u)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSearch(body)
+}
+
+// ParseSearch keeps equities and ETFs. The symbol is the Yahoo listing, such as 005930.KS.
+// Names are cut to the length the API will store.
+func ParseSearch(data []byte) ([]market.Hit, error) {
+	var raw struct {
+		Quotes []struct {
+			Symbol    string `json:"symbol"`
+			Shortname string `json:"shortname"`
+			Longname  string `json:"longname"`
+			QuoteType string `json:"quoteType"`
+			ExchDisp  string `json:"exchDisp"`
+		} `json:"quotes"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]market.Hit, 0, 20)
+	seen := map[string]bool{}
+	for _, r := range raw.Quotes {
+		switch strings.ToUpper(strings.TrimSpace(r.QuoteType)) {
+		case "EQUITY", "ETF":
+		default:
+			continue
+		}
+		sym := strings.ToUpper(strings.TrimSpace(r.Symbol))
+		if sym == "" || len(sym) > 16 || seen[sym] {
+			continue
+		}
+		seen[sym] = true
+		name := strings.TrimSpace(r.Longname)
+		if name == "" {
+			name = strings.TrimSpace(r.Shortname)
+		}
+		out = append(out, market.Hit{
+			AssetClass:     market.Stock,
+			Display:        sym,
+			ProviderSymbol: sym,
+			Name:           searchName(name, r.ExchDisp),
+		})
+		if len(out) >= 20 {
+			break
+		}
+	}
+	return out, nil
+}
+
+func searchName(company, exch string) string {
+	company = strings.TrimSpace(company)
+	exch = strings.TrimSpace(exch)
+	const max = 80
+	if exch == "" {
+		return trimRunes(company, max)
+	}
+	suffix := " · " + exch
+	room := max - len([]rune(suffix))
+	if room < 1 {
+		return trimRunes(exch, max)
+	}
+	company = trimRunes(company, room)
+	if company == "" {
+		return trimRunes(exch, max)
+	}
+	return company + suffix
+}
+
+func trimRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 func (c *Client) pace() {

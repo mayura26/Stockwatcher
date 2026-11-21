@@ -58,6 +58,19 @@ func (c *Client) Quote(ctx context.Context, symbol string) (market.Quote, error)
 	return ParseQuote(body)
 }
 
+// ProfileLogo is the company logo URL from /stock/profile2.
+// An empty URL means Finnhub has no logo for the symbol.
+func (c *Client) ProfileLogo(ctx context.Context, symbol string) (string, error) {
+	if !c.Enabled() {
+		return "", ErrNoKey
+	}
+	body, err := c.get(ctx, "/stock/profile2?symbol="+url.QueryEscape(symbol))
+	if err != nil {
+		return "", err
+	}
+	return ParseProfileLogo(body)
+}
+
 // Search returns US common stocks. Symbols with an exchange suffix are dropped.
 func (c *Client) Search(ctx context.Context, q string) ([]market.Hit, error) {
 	if !c.Enabled() {
@@ -164,6 +177,17 @@ func ParseQuote(data []byte) (market.Quote, error) {
 	}
 	dp := raw.DP
 	return market.Quote{Price: raw.C, PrevClose: raw.PC, DayPct: &dp, AsOf: asOf}, nil
+}
+
+// ParseProfileLogo reads the logo field. A missing field is an empty URL.
+func ParseProfileLogo(data []byte) (string, error) {
+	var raw struct {
+		Logo string `json:"logo"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw.Logo), nil
 }
 
 // ParseSearch keeps US common stocks (no dot or colon in the symbol).

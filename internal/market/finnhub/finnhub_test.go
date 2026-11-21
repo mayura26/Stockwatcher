@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+func TestParseProfileLogo(t *testing.T) {
+	got, err := ParseProfileLogo([]byte(`{"logo":" https://static.example/aapl.png ","name":"Apple"}`))
+	if err != nil || got != "https://static.example/aapl.png" {
+		t.Fatalf("%q %v", got, err)
+	}
+	got, err = ParseProfileLogo([]byte(`{}`))
+	if err != nil || got != "" {
+		t.Fatalf("empty %q %v", got, err)
+	}
+	if _, err := ParseProfileLogo([]byte(`{`)); err == nil {
+		t.Fatal("broken json accepted")
+	}
+}
+
 func TestParseQuote(t *testing.T) {
 	q, err := ParseQuote([]byte(`{"c":189.2,"d":0.8,"dp":0.42,"h":190,"l":188,"o":188.5,"pc":188.4,"t":1700000000}`))
 	if err != nil {
