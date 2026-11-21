@@ -79,6 +79,16 @@ func serve() error {
 	}
 	slog.Info("ranges", "updated", ranges)
 	go func() {
+		logoCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		n, err := sy.RefreshLogos(logoCtx)
+		if err != nil {
+			slog.Error("logo", "err", err)
+			return
+		}
+		slog.Info("logos", "updated", n)
+	}()
+	go func() {
 		<-ctx.Done()
 		shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

@@ -9,12 +9,46 @@ import (
 const (
 	// MaxLogoBytes is the largest image kept for a symbol mark.
 	MaxLogoBytes = 256 << 10
+	// StockLogoBase is the public Finnhub logo file, plus "{SYMBOL}.png".
+	// Company profile is paid on this key, so the file is fetched directly.
+	StockLogoBase = "https://static2.finnhub.io/file/publicdatany/finnhubimage/stock_logo/"
 	// CryptoLogoBase is a pinned color PNG for a lowercase ticker, plus ".png".
 	CryptoLogoBase = "https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/128/color/"
+	// ParqetLogoBase covers listings the Finnhub file does not, such as 005930.KS.
+	ParqetLogoBase = "https://assets.parqet.com/logos/symbol/"
 )
 
 // ErrLogo means the bytes are not a small png, jpeg, webp, or svg.
 var ErrLogo = errors.New("logo rejected")
+
+// StockLogoURL is the public PNG for a listing such as NVDA or BRK.B.
+// base is StockLogoBase except in tests. A symbol with any other character has no URL.
+func StockLogoURL(base, symbol string) (string, bool) {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if base == "" || sym == "" || len(sym) > 16 {
+		return "", false
+	}
+	for _, r := range sym {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '-' {
+			return "", false
+		}
+	}
+	return base + sym + ".png", true
+}
+
+// ParqetLogoURL is a second image for the same listing symbol.
+func ParqetLogoURL(symbol string) (string, bool) {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if sym == "" || len(sym) > 16 {
+		return "", false
+	}
+	for _, r := range sym {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '-' {
+			return "", false
+		}
+	}
+	return ParqetLogoBase + sym, true
+}
 
 // CryptoLogoURL is the icon for a crypto display symbol such as BTC.
 // A symbol with any other character has no URL.

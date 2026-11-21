@@ -9,14 +9,13 @@ import (
 	"net/url"
 	"time"
 
+	"log/slog"
+
 	"stockwatcher/internal/market"
 	"stockwatcher/internal/store"
 )
 
-const (
-	logoStockBudget  = 2
-	logoCryptoBudget = 8
-)
+const logoCryptoBudget = 8
 
 // errLogoMiss is a looked-up symbol with nothing usable to store.
 // A network failure is not a miss, so the next tick can try again.
@@ -59,17 +58,38 @@ func (s *Syncer) EnsureLogo(ctx context.Context, id int64) error {
 }
 
 func (s *Syncer) ensureStockLogo(ctx context.Context, sym store.Symbol) error {
-	if s.Finnhub == nil || !s.Finnhub.Enabled() {
-		return nil
+	base := s.LogoBase
+	if base == "" {
+		base = market.StockLogoBase
 	}
-	raw, err := s.Finnhub.ProfileLogo(ctx, sym.ProviderSymbol)
-	if err != nil {
-		return err
+	var urls []string
+	if raw, ok := market.StockLogoURL(base, sym.ProviderSymbol); ok {
+		urls = append(urls, raw)
 	}
-	if raw == "" {
+	// A test host replaces the first URL. The public fallback stays off so the test does not call out.
+	if s.LogoBase == "" {
+		if alt, ok := market.ParqetLogoURL(sym.ProviderSymbol); ok {
+			urls = append(urls, alt)
+		}
+	}
+	if len(urls) == 0 {
 		return s.Store.PutLogo(ctx, sym.ID, nil, "", s.now().Unix())
 	}
-	return s.storeFetchedLogo(ctx, sym.ID, raw)
+	var last error
+	for _, raw := range urls {
+		body, media, err := s.fetchLogo(ctx, raw)
+		if err == nil {
+			return s.Store.PutLogo(ctx, sym.ID, body, media, s.now().Unix())
+		}
+		if !errors.Is(err, errLogoMiss) {
+			return err
+		}
+		last = err
+	}
+	if last != nil {
+		return s.Store.PutLogo(ctx, sym.ID, nil, "", s.now().Unix())
+	}
+	return nil
 }
 
 func (s *Syncer) ensureCryptoLogo(ctx context.Context, sym store.Symbol) error {
@@ -91,8 +111,13 @@ func (s *Syncer) storeFetchedLogo(ctx context.Context, id int64, raw string) err
 	return s.Store.PutLogo(ctx, id, body, media, s.now().Unix())
 }
 
-// refreshLogos fills misses. Futures are all recorded. Crypto is capped so a
-// long list does not stall the tick. Stocks stay at two Finnhub profile calls.
+// RefreshLogos fills marks that are missing or due for another try.
+func (s *Syncer) RefreshLogos(ctx context.Context) (int, error) {
+	return s.refreshLogos(ctx)
+}
+
+// refreshLogos fills misses. Futures and stocks are all fetched. Crypto is
+// capped so a long list does not stall the tick. One failure does not stop the rest.
 func (s *Syncer) refreshLogos(ctx context.Context) (int, error) {
 	need, err := s.Store.SymbolsNeedingLogo(ctx, s.now().Add(-7*24*time.Hour).Unix())
 	if err != nil {
@@ -116,7 +141,8 @@ func (s *Syncer) refreshLogos(ctx context.Context) (int, error) {
 		}
 		for _, sym := range list[:budget] {
 			if err := s.EnsureLogo(ctx, sym.ID); err != nil {
-				return err
+				slog.Error("logo", "symbol", sym.ID, "err", err)
+				continue
 			}
 			n++
 		}
@@ -128,7 +154,7 @@ func (s *Syncer) refreshLogos(ctx context.Context) (int, error) {
 	if err := write(cryptos, logoCryptoBudget); err != nil {
 		return n, err
 	}
-	if err := write(stocks, logoStockBudget); err != nil {
+	if err := write(stocks, len(stocks)); err != nil {
 		return n, err
 	}
 	return n, nil

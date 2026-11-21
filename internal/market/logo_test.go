@@ -50,6 +50,20 @@ func TestAcceptLogo(t *testing.T) {
 	}
 }
 
+func TestStockLogoURL(t *testing.T) {
+	got, ok := StockLogoURL(StockLogoBase, "nvda")
+	if !ok || got != StockLogoBase+"NVDA.png" {
+		t.Fatalf("%s %v", got, ok)
+	}
+	got, ok = StockLogoURL(StockLogoBase, "BRK.B")
+	if !ok || !strings.HasSuffix(got, "/BRK.B.png") {
+		t.Fatalf("%s %v", got, ok)
+	}
+	if _, ok := StockLogoURL(StockLogoBase, "BAD SYMBOL"); ok {
+		t.Fatal("space accepted")
+	}
+}
+
 func TestCryptoLogoURL(t *testing.T) {
 	got, ok := CryptoLogoURL("BTC")
 	if !ok || !strings.HasSuffix(got, "/btc.png") || !strings.HasPrefix(got, "https://") {

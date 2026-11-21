@@ -2,8 +2,6 @@ package syncer
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,39 +9,27 @@ import (
 	"time"
 
 	"stockwatcher/internal/market"
-	"stockwatcher/internal/market/finnhub"
 	"stockwatcher/internal/store"
 )
 
 func TestEnsureLogo(t *testing.T) {
 	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
-	profiles := 0
 	var srv *httptest.Server
 	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/stock/profile2"):
-			profiles++
-			if profiles > 8 {
-				http.Error(w, "slow", http.StatusTooManyRequests)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			switch r.URL.Query().Get("symbol") {
-			case "NONE":
-				_, _ = w.Write([]byte(`{"logo":""}`))
-			case "HTML":
-				fmt.Fprintf(w, `{"logo":"%s/a.html"}`, srv.URL)
-			default:
-				fmt.Fprintf(w, `{"logo":"%s/a.png"}`, srv.URL)
-			}
-		case r.URL.Path == "/a.png":
-			w.Header().Set("Content-Type", "image/png")
-			_, _ = w.Write(png)
-		case r.URL.Path == "/a.html":
+		name := strings.TrimPrefix(r.URL.Path, "/stock_logo/")
+		switch name {
+		case "NONE.png":
+			http.NotFound(w, r)
+		case "HTML.png":
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte("<html></html>"))
 		default:
-			http.NotFound(w, r)
+			if !strings.HasSuffix(name, ".png") {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png)
 		}
 	}))
 	defer srv.Close()
@@ -68,8 +54,9 @@ func TestEnsureLogo(t *testing.T) {
 	amd := add(market.Stock, "AMD", "AMD", "AMD")
 	coin := add(market.Crypto, "NO LOGO", "NOLOGOUSDT", "No logo")
 
-	sy := New(st, &finnhub.Client{Key: "k", Base: srv.URL, HTTP: srv.Client()}, nil, nil, nil)
+	sy := New(st, nil, nil, nil, nil)
 	sy.HTTP = srv.Client()
+	sy.LogoBase = srv.URL + "/stock_logo/"
 	sy.Now = func() time.Time { return time.Unix(1_700_000_000, 0) }
 
 	if err := sy.EnsureLogo(ctx, future.ID); err != nil {
@@ -83,9 +70,6 @@ func TestEnsureLogo(t *testing.T) {
 	}
 	if _, err := st.Logo(ctx, coin.ID); err != store.ErrNotFound {
 		t.Fatalf("crypto miss %v", err)
-	}
-	if profiles != 0 {
-		t.Fatalf("future or crypto called finnhub %d", profiles)
 	}
 
 	if err := sy.EnsureLogo(ctx, apple.ID); err != nil {
@@ -103,7 +87,7 @@ func TestEnsureLogo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.Logo(ctx, none.ID); err != store.ErrNotFound {
-		t.Fatalf("empty profile %v", err)
+		t.Fatalf("missing file %v", err)
 	}
 	if err := sy.EnsureLogo(ctx, html.ID); err != nil {
 		t.Fatal(err)
@@ -112,32 +96,16 @@ func TestEnsureLogo(t *testing.T) {
 		t.Fatalf("html stored %v", err)
 	}
 
-	before := profiles
 	n, err := sy.refreshLogos(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != logoStockBudget {
+	if n != 3 {
 		t.Fatalf("refreshed %d", n)
 	}
-	if profiles-before != logoStockBudget {
-		t.Fatalf("profile calls %d", profiles-before)
-	}
-	if _, err := st.Logo(ctx, msft.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Logo(ctx, nvda.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Logo(ctx, amd.ID); err != store.ErrNotFound {
-		t.Fatal("third stock fetched inside the cap")
-	}
-
-	profiles = 100
-	if err := sy.EnsureLogo(ctx, amd.ID); !errors.Is(err, finnhub.ErrRateLimit) {
-		t.Fatalf("rate limit %v", err)
-	}
-	if _, err := st.Logo(ctx, amd.ID); err != store.ErrNotFound {
-		t.Fatal("rate limit stored a miss")
+	for _, id := range []int64{msft.ID, nvda.ID, amd.ID} {
+		if _, err := st.Logo(ctx, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

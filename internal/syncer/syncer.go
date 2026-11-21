@@ -24,13 +24,14 @@ var errStoreBars = errors.New("store bars")
 
 // Syncer refreshes quotes and bars, then evaluates price crosses.
 type Syncer struct {
-	Store   *store.Store
-	Finnhub *finnhub.Client
-	Yahoo   *yahoo.Client
-	Binance *binance.Client
-	Push    *push.Sender
-	Now     func() time.Time
-	HTTP    *http.Client
+	Store    *store.Store
+	Finnhub  *finnhub.Client
+	Yahoo    *yahoo.Client
+	Binance  *binance.Client
+	Push     *push.Sender
+	Now      func() time.Time
+	HTTP     *http.Client
+	LogoBase string
 
 	mu       sync.Mutex
 	inflight map[int64]chan struct{}
