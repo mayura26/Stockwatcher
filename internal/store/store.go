@@ -171,7 +171,10 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureQuoteExtended(); err != nil {
 		return err
 	}
-	return s.ensureRanges()
+	if err := s.ensureRanges(); err != nil {
+		return err
+	}
+	return s.ensureOwned()
 }
 
 // ensureRanges stores the expected band for the last completed session.
@@ -184,6 +187,17 @@ CREATE TABLE IF NOT EXISTS ranges (
   low REAL NOT NULL,
   high REAL NOT NULL,
   computed_at INTEGER NOT NULL
+)`)
+	return err
+}
+
+// ensureOwned stores the starred holdings. Membership is independent of groups.
+func (s *Store) ensureOwned() error {
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS owned (
+  symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
 )`)
 	return err
 }
@@ -367,6 +381,11 @@ func (s *Store) ensureGroup() error {
 	return err
 }
 
+const (
+	NotableGroupID int64 = 0
+	OwnedGroupID   int64 = -1
+)
+
 type Row struct {
 	ID         int64     `json:"id"`
 	Display    string    `json:"display"`
@@ -385,6 +404,7 @@ type Row struct {
 	Position   int       `json:"position"`
 	RangeLow   *float64  `json:"range_low,omitempty"`
 	RangeHigh  *float64  `json:"range_high,omitempty"`
+	Owned      bool      `json:"owned,omitempty"`
 }
 
 type Group struct {
@@ -393,6 +413,7 @@ type Group struct {
 	Color     string `json:"color"`
 	Icon      string `json:"icon"`
 	Position  int    `json:"position"`
+	Kind      string `json:"kind,omitempty"`
 	Synthetic bool   `json:"synthetic,omitempty"`
 	Rows      []Row  `json:"rows"`
 }
@@ -478,18 +499,24 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM alerts WHERE status = 'armed'`).Scan(&board.ArmedAlerts); err != nil {
 		return Board{}, err
 	}
-	notable, err := s.notableGroup(ctx, board.Groups)
+	owned, err := s.ownedRows(ctx)
 	if err != nil {
 		return Board{}, err
 	}
-	board.Groups = append([]Group{notable}, board.Groups...)
+	stampOwned(board.Groups, owned)
+	notable, err := s.notableGroup(ctx, board.Groups, owned)
+	if err != nil {
+		return Board{}, err
+	}
+	board.Groups = append([]Group{notable, ownedGroup(owned)}, board.Groups...)
 	return board, nil
 }
 
 // notableGroup is the pinned list of watched names that have traded outside
 // the cached band. It is not a stored group. Watched names are the same set
-// the tick refreshes: anything on a board, plus an armed alert with no group.
-func (s *Store) notableGroup(ctx context.Context, groups []Group) (Group, error) {
+// the tick refreshes: anything on a board, an armed alert with no group, or
+// an owned name with no group.
+func (s *Store) notableGroup(ctx context.Context, groups []Group, owned []Row) (Group, error) {
 	seen := map[int64]struct{}{}
 	var candidates []Row
 	for _, g := range groups {
@@ -509,6 +536,14 @@ func (s *Store) notableGroup(ctx context.Context, groups []Group) (Group, error)
 		if _, ok := seen[row.ID]; ok {
 			continue
 		}
+		seen[row.ID] = struct{}{}
+		candidates = append(candidates, row)
+	}
+	for _, row := range owned {
+		if _, ok := seen[row.ID]; ok {
+			continue
+		}
+		seen[row.ID] = struct{}{}
 		candidates = append(candidates, row)
 	}
 	var rows []Row
@@ -524,14 +559,22 @@ func (s *Store) notableGroup(ctx context.Context, groups []Group) (Group, error)
 	if rows == nil {
 		rows = []Row{}
 	}
+	ownedSet := map[int64]struct{}{}
+	for _, row := range owned {
+		ownedSet[row.ID] = struct{}{}
+	}
 	for i := range rows {
 		rows[i].Position = i
+		if _, ok := ownedSet[rows[i].ID]; ok {
+			rows[i].Owned = true
+		}
 	}
 	return Group{
-		ID:        0,
+		ID:        NotableGroupID,
 		Name:      "Notable",
 		Color:     "#c56b52",
 		Icon:      "pulse",
+		Kind:      "notable",
 		Synthetic: true,
 		Rows:      rows,
 	}, nil
@@ -581,6 +624,85 @@ ORDER BY s.id`)
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ownedRows(ctx context.Context) ([]Row, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, s.display, s.name, s.asset_class,
+       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
+       q.ext_session, q.ext_pct, r.low, r.high
+FROM owned o
+JOIN symbols s ON s.id = o.symbol_id
+LEFT JOIN quotes q ON q.symbol_id = s.id
+LEFT JOIN ranges r ON r.symbol_id = s.id
+ORDER BY o.position, s.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Row
+	for rows.Next() {
+		var (
+			row                 Row
+			price, cd, cw, cm   sql.NullFloat64
+			h1, h4, rlow, rhigh sql.NullFloat64
+			spark               sql.NullString
+			asOf                sql.NullInt64
+			extSess             sql.NullString
+			extPct              sql.NullFloat64
+		)
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh); err != nil {
+			return nil, err
+		}
+		row.Price = floatPtr(price)
+		row.ChangeD = floatPtr(cd)
+		row.ChangeW = floatPtr(cw)
+		row.ChangeM = floatPtr(cm)
+		row.ChangeH1 = floatPtr(h1)
+		row.ChangeH4 = floatPtr(h4)
+		row.Sparkline = decodeSpark(spark)
+		row.AsOf = intPtr(asOf)
+		row.ExtSession = extSess.String
+		row.ExtPct = floatPtr(extPct)
+		row.RangeLow = floatPtr(rlow)
+		row.RangeHigh = floatPtr(rhigh)
+		row.Owned = true
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func ownedGroup(rows []Row) Group {
+	if rows == nil {
+		rows = []Row{}
+	}
+	for i := range rows {
+		rows[i].Owned = true
+		rows[i].Position = i
+	}
+	return Group{
+		ID:        OwnedGroupID,
+		Name:      "Owned",
+		Color:     "#8eae8a",
+		Icon:      "coin",
+		Kind:      "owned",
+		Synthetic: true,
+		Rows:      rows,
+	}
+}
+
+func stampOwned(groups []Group, owned []Row) {
+	set := map[int64]struct{}{}
+	for _, row := range owned {
+		set[row.ID] = struct{}{}
+	}
+	for i := range groups {
+		for j := range groups[i].Rows {
+			if _, ok := set[groups[i].Rows[j].ID]; ok {
+				groups[i].Rows[j].Owned = true
+			}
+		}
+	}
 }
 
 func outsideBand(row Row) bool {
@@ -862,6 +984,41 @@ func (s *Store) RemoveFromGroup(ctx context.Context, groupID, symbolID int64) er
 	return nil
 }
 
+// SetOwned stars or unstars a symbol. Starring an owned symbol leaves its place.
+// Unstarring a symbol that is not owned returns ErrNotFound.
+func (s *Store) SetOwned(ctx context.Context, symbolID int64, owned bool) error {
+	if !owned {
+		res, err := s.db.ExecContext(ctx, `DELETE FROM owned WHERE symbol_id = ?`, symbolID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+	if _, err := s.Symbol(ctx, symbolID); err != nil {
+		return err
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM owned WHERE symbol_id = ?`, symbolID).Scan(&n); err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	var pos int
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), -1) + 1 FROM owned`).Scan(&pos); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO owned(symbol_id, position, created_at) VALUES (?, ?, ?)`, symbolID, pos, time.Now().Unix())
+	return err
+}
+
 func (s *Store) ReorderSymbols(ctx context.Context, groupID int64, ids []int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1014,6 +1171,7 @@ FROM symbols s
 LEFT JOIN ranges r ON r.symbol_id = s.id
 WHERE EXISTS (SELECT 1 FROM group_symbols gs WHERE gs.symbol_id = s.id)
    OR EXISTS (SELECT 1 FROM alerts a WHERE a.symbol_id = s.id AND a.status = 'armed')
+   OR EXISTS (SELECT 1 FROM owned o WHERE o.symbol_id = s.id)
 ORDER BY s.id`)
 	if err != nil {
 		return nil, err
@@ -1134,6 +1292,7 @@ SELECT s.id, s.asset_class, s.display, s.provider_symbol, s.name, s.bars_synced_
 FROM symbols s
 WHERE EXISTS (SELECT 1 FROM group_symbols gs WHERE gs.symbol_id = s.id)
    OR EXISTS (SELECT 1 FROM alerts a WHERE a.symbol_id = s.id AND a.status = 'armed')
+   OR EXISTS (SELECT 1 FROM owned o WHERE o.symbol_id = s.id)
 ORDER BY s.id`)
 	if err != nil {
 		return nil, err
@@ -1161,6 +1320,7 @@ WHERE NOT EXISTS (SELECT 1 FROM bars b WHERE b.symbol_id = s.id)
   AND (
     EXISTS (SELECT 1 FROM group_symbols gs WHERE gs.symbol_id = s.id)
     OR EXISTS (SELECT 1 FROM alerts a WHERE a.symbol_id = s.id AND a.status = 'armed')
+    OR EXISTS (SELECT 1 FROM owned o WHERE o.symbol_id = s.id)
   )
 ORDER BY s.id
 LIMIT ?`, limit)

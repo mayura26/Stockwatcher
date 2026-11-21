@@ -47,6 +47,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/groups/{id}/symbols", s.auth(s.addSymbol))
 	mux.HandleFunc("DELETE /api/groups/{id}/symbols/{symbolId}", s.auth(s.removeSymbol))
 	mux.HandleFunc("PUT /api/groups/{id}/symbols/order", s.auth(s.reorderSymbols))
+	mux.HandleFunc("PUT /api/owned/{symbolId}", s.auth(s.ownSymbol))
+	mux.HandleFunc("DELETE /api/owned/{symbolId}", s.auth(s.unownSymbol))
 	mux.HandleFunc("GET /api/search", s.auth(s.search))
 	mux.HandleFunc("GET /api/bars", s.auth(s.bars))
 	mux.HandleFunc("GET /api/alerts", s.auth(s.listAlerts))
@@ -159,6 +161,28 @@ func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mapErr(w, s.Store.DeleteGroup(r.Context(), id)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) ownSymbol(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "symbolId")
+	if !ok {
+		return
+	}
+	if mapErr(w, s.Store.SetOwned(r.Context(), id, true)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) unownSymbol(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "symbolId")
+	if !ok {
+		return
+	}
+	if mapErr(w, s.Store.SetOwned(r.Context(), id, false)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

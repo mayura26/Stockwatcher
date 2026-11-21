@@ -45,13 +45,17 @@ class SwBoard extends HTMLElement {
     this.draft = { color: COLORS[0].value, icon: 'mark' };
     this.sheetOpen = false;
     this.openChanges = new Set();
+    this.closedFolds = loadFolds();
     this.innerHTML = `
       <header class="top">
-        <div class="brand">Stockwatcher</div>
-        <div class="top-actions">
-          <button type="button" class="text-btn" data-act="edit">Edit</button>
-          <button type="button" class="text-btn" data-act="alerts">Alerts</button>
+        <div class="top-line">
+          <div class="brand">Stockwatcher</div>
+          <div class="top-actions">
+            <button type="button" class="bar-btn" data-act="edit" aria-pressed="false">Edit</button>
+            <button type="button" class="bar-btn" data-act="alerts">Alerts</button>
+          </div>
         </div>
+        <div class="specials" role="tablist"></div>
       </header>
       <div class="groups" role="tablist"></div>
       <div class="board">
@@ -94,25 +98,43 @@ class SwBoard extends HTMLElement {
     const y = window.scrollY;
     this.board = board;
     this.groupId = groupId;
+    this.view = groupId === 'all' ? 'all' : '';
     this.editing = editing;
     this.flashes = flashes || new Map();
-    const group = (board?.groups || []).find((g) => g.id === groupId) || board?.groups?.[0];
+    const groups = board?.groups || [];
+    const group = this.view === 'all'
+      ? null
+      : groups.find((g) => g.id === groupId) || groups.find((g) => !g.synthetic) || null;
     this.group = group;
+    this.renderSpecials(board);
     this.renderGroups(board);
     this.renderEdit(group);
-    this.renderCols(group);
-    this.renderRows(group);
+    this.renderBody();
     const alerts = this.querySelector('[data-act="alerts"]');
     alerts.innerHTML = armed ? 'Alerts<span class="dot" aria-label="armed alerts"></span>' : 'Alerts';
-    this.querySelector('[data-act="edit"]').classList.toggle('is-on', editing);
-    this.querySelector('[data-act="edit"]').setAttribute('aria-pressed', editing ? 'true' : 'false');
-    this.querySelector('.add-row').hidden = !!group?.synthetic;
+    const edit = this.querySelector('[data-act="edit"]');
+    edit.classList.toggle('is-on', editing);
+    edit.setAttribute('aria-pressed', editing ? 'true' : 'false');
+    this.querySelector('.add-row').hidden = this.view === 'all' || !!group?.synthetic;
     window.scrollTo(0, y);
+  }
+
+  renderSpecials(board) {
+    const host = this.querySelector('.specials');
+    const items = [{ id: 'all', name: 'All' }];
+    for (const group of board?.groups || []) {
+      if (group.kind === 'notable' || group.kind === 'owned') items.push({ id: String(group.id), name: group.name });
+    }
+    const current = String(this.groupId);
+    host.innerHTML = items.map((item) => {
+      const on = current === item.id;
+      return `<button type="button" class="text-btn${on ? ' is-on' : ''}" role="tab" data-view="${item.id}" aria-selected="${on}">${escapeHTML(item.name)}</button>`;
+    }).join('');
   }
 
   renderGroups(board) {
     const host = this.querySelector('.groups');
-    const groups = board?.groups || [];
+    const groups = (board?.groups || []).filter((g) => !g.synthetic);
     const chips = groups.map((g) => {
       const on = g.id === this.group?.id;
       const color = chipColor(g.color);
@@ -151,43 +173,81 @@ class SwBoard extends HTMLElement {
     cols.innerHTML = oldest ? `<span class="asof">${escapeHTML(formatClock(oldest))}</span>` : '';
   }
 
+  renderBody() {
+    if (this.view === 'all') {
+      this.querySelector('.cols').innerHTML = '';
+      this.renderAll(this.board);
+      return;
+    }
+    this.renderCols(this.group);
+    this.renderRows(this.group);
+  }
+
+  renderAll(board) {
+    const host = this.querySelector('.rows');
+    const groups = (board?.groups || []).filter((g) => !g.synthetic);
+    if (!groups.length) {
+      host.innerHTML = '<p class="empty">Nothing in this group.</p>';
+      return;
+    }
+    host.innerHTML = groups.map((group) => {
+      const shut = this.closedFolds.has(group.id);
+      const rows = group.rows || [];
+      let body = '';
+      if (!shut) {
+        body = rows.length
+          ? rows.map((row, i) => this.cardHTML(row, i, rows, true)).join('')
+          : '<p class="empty fold-empty">Nothing in this group.</p>';
+      }
+      return `<section class="fold${shut ? ' is-shut' : ''}">
+        <button type="button" class="fold-h" data-fold="${group.id}" aria-expanded="${shut ? 'false' : 'true'}" style="--chip:${chipColor(group.color)}">
+          <span class="chip-icon">${iconSVG(group.icon)}</span>
+          <span class="fold-name">${escapeHTML(group.name)}</span>
+          <span class="fold-mark" aria-hidden="true"></span>
+        </button>
+        ${body}
+      </section>`;
+    }).join('');
+  }
+
   renderRows(group) {
     const host = this.querySelector('.rows');
     const rows = group?.rows || [];
     if (!rows.length) {
-      host.innerHTML = group?.synthetic
-        ? '<p class="empty">No unusual moves.</p>'
-        : '<p class="empty">Nothing in this group.</p>';
+      host.innerHTML = `<p class="empty">${escapeHTML(emptyCopy(group))}</p>`;
       return;
     }
     const fixed = !!group?.synthetic;
-    host.innerHTML = rows.map((row, i) => {
-      const flash = this.flashes.get(row.id);
-      const open = this.openChanges.has(row.id);
-      const expanded = open ? 'true' : 'false';
-      const name = `<button type="button" class="card-name" data-expand="${row.id}" aria-expanded="${expanded}">
-            <span class="ident">
-              <span class="sym">${escapeHTML(row.display)}</span>
-              <span class="sub">${escapeHTML(row.name || '')}</span>
-            </span>
-          </button>`;
-      const price = `<button type="button" class="card-px" data-expand="${row.id}" aria-expanded="${expanded}">
-            <span class="px num ${priceTone(row.change_d)}">${formatPrice(row.price)}</span>
-            <span class="day">${extLine(row)}${chg(row.change_d)}</span>
-          </button>`;
-      const more = open ? `<div class="more">${rangeMeter(row)}<div class="more-chgs">
-            <span class="more-cell"><span class="chg-h">1H</span>${chg(row.change_1h)}</span>
-            <span class="more-cell"><span class="chg-h">4H</span>${chg(row.change_4h)}</span>
-            <span class="more-cell"><span class="chg-h">W</span>${chg(row.change_w)}</span>
-            <span class="more-cell"><span class="chg-h">M</span>${chg(row.change_m)}</span>
-          </div></div>` : '';
-      const moves = this.editing && !fixed ? `<span class="row-edit">
-            <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
-            <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="1" ${i === rows.length - 1 ? 'disabled' : ''}>Down</button>
-          </span>` : '';
-      const remove = fixed ? '' : `<button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>`;
-      return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}${fixed ? ' is-auto' : ''}" data-symbol="${row.id}">${name}${sparkHit(row, this.editing)}${price}${remove}${more}${moves}</div>`;
-    }).join('');
+    host.innerHTML = rows.map((row, i) => this.cardHTML(row, i, rows, fixed)).join('');
+  }
+
+  cardHTML(row, i, rows, fixed) {
+    const flash = this.flashes.get(row.id);
+    const open = this.openChanges.has(row.id);
+    const expanded = open ? 'true' : 'false';
+    const mark = row.owned ? `<span class="owned-mark" role="img" aria-label="Owned">${starSVG()}</span>` : '';
+    const name = `<button type="button" class="card-name" data-expand="${row.id}" aria-expanded="${expanded}">
+          <span class="ident">
+            <span class="sym">${escapeHTML(row.display)}${mark}</span>
+            <span class="sub">${escapeHTML(row.name || '')}</span>
+          </span>
+        </button>`;
+    const price = `<button type="button" class="card-px" data-expand="${row.id}" aria-expanded="${expanded}">
+          <span class="px num ${priceTone(row.change_d)}">${formatPrice(row.price)}</span>
+          <span class="day">${extLine(row)}${chg(row.change_d)}</span>
+        </button>`;
+    const more = open ? `<div class="more">${ownButton(row)}${rangeMeter(row)}<div class="more-chgs">
+          <span class="more-cell"><span class="chg-h">1H</span>${chg(row.change_1h)}</span>
+          <span class="more-cell"><span class="chg-h">4H</span>${chg(row.change_4h)}</span>
+          <span class="more-cell"><span class="chg-h">W</span>${chg(row.change_w)}</span>
+          <span class="more-cell"><span class="chg-h">M</span>${chg(row.change_m)}</span>
+        </div></div>` : '';
+    const moves = this.editing && !fixed ? `<span class="row-edit">
+          <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
+          <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="1" ${i === rows.length - 1 ? 'disabled' : ''}>Down</button>
+        </span>` : '';
+    const remove = fixed ? '' : `<button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>`;
+    return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}${fixed ? ' is-auto' : ''}" data-symbol="${row.id}">${name}${sparkHit(row, this.editing)}${price}${remove}${more}${moves}</div>`;
   }
 
   openGroupSheet(mode) {
@@ -195,7 +255,7 @@ class SwBoard extends HTMLElement {
     const group = this.group;
     const editing = mode === 'edit' && group;
     this.draft = {
-      color: chipColor(editing ? group.color : nextColor(this.board?.groups)),
+      color: chipColor(editing ? group.color : nextColor((this.board?.groups || []).filter((g) => !g.synthetic))),
       icon: iconId(editing ? group.icon : 'mark'),
     };
     this.querySelector('#group-sheet-title').textContent = editing ? 'Edit group' : 'New group';
@@ -224,12 +284,12 @@ class SwBoard extends HTMLElement {
   }
 
   armDrag(event) {
-    if (this.drag || this.group?.synthetic) return;
+    if (this.drag || this.view === 'all' || this.group?.synthetic) return;
     if (event.button > 0) return;
     const host = this.querySelector('.rows');
     const row = event.target.closest('.row');
     if (!row || !host?.contains(row)) return;
-    if (event.target.closest('.row-x, .row-edit')) return;
+    if (event.target.closest('.row-x, .row-edit, .own')) return;
     this.ateClick = false;
     this.drag = {
       pointerId: event.pointerId,
@@ -426,6 +486,12 @@ class SwBoard extends HTMLElement {
       this.syncPicks();
       return;
     }
+    const view = event.target.closest('[data-view]');
+    if (view) {
+      const raw = view.dataset.view;
+      this.emit({ type: 'group', id: raw === 'all' ? 'all' : Number(raw) });
+      return;
+    }
     const group = event.target.closest('[data-group]');
     if (group) {
       this.emit({ type: 'group', id: Number(group.dataset.group) });
@@ -467,6 +533,24 @@ class SwBoard extends HTMLElement {
       this.emit({ type: 'delete-group' });
       return;
     }
+    const own = event.target.closest('[data-own]');
+    if (own) {
+      this.emit({
+        type: 'toggle-owned',
+        symbolId: Number(own.dataset.own),
+        owned: own.getAttribute('aria-pressed') !== 'true',
+      });
+      return;
+    }
+    const fold = event.target.closest('[data-fold]');
+    if (fold) {
+      const id = Number(fold.dataset.fold);
+      if (this.closedFolds.has(id)) this.closedFolds.delete(id);
+      else this.closedFolds.add(id);
+      saveFolds(this.closedFolds);
+      this.renderAll(this.board);
+      return;
+    }
     const open = event.target.closest('[data-open]');
     if (open && !this.editing) {
       this.emit({ type: 'open', id: Number(open.dataset.open) });
@@ -477,7 +561,7 @@ class SwBoard extends HTMLElement {
       const id = Number(expand.dataset.expand);
       if (this.openChanges.has(id)) this.openChanges.delete(id);
       else this.openChanges.add(id);
-      this.renderRows(this.group);
+      this.renderBody();
     }
   }
 
@@ -526,6 +610,37 @@ function groupSheet() {
         </form>
       </div>
     </div>`;
+}
+
+const FOLD_KEY = 'sw.all.closed';
+
+function loadFolds() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FOLD_KEY) || '[]');
+    if (!Array.isArray(raw)) return new Set();
+    return new Set(raw.map(Number).filter((n) => Number.isFinite(n)));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveFolds(closed) {
+  localStorage.setItem(FOLD_KEY, JSON.stringify([...closed]));
+}
+
+function emptyCopy(group) {
+  if (group?.kind === 'owned') return 'Nothing owned.';
+  if (group?.synthetic) return 'No unusual moves.';
+  return 'Nothing in this group.';
+}
+
+function starSVG() {
+  return '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" stroke="none" d="M8 1.6 9.7 6.1h4.7L11.1 8.9l1.2 4.5L8 10.8 3.7 13.4 4.9 8.9 1.6 6.1h4.7Z"></path></svg>';
+}
+
+function ownButton(row) {
+  const on = !!row.owned;
+  return `<button type="button" class="own${on ? ' is-on' : ''}" data-own="${row.id}" aria-pressed="${on ? 'true' : 'false'}">${starSVG()}<span>Owned</span></button>`;
 }
 
 function svg(body) {

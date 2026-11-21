@@ -126,6 +126,7 @@ class SwApp extends HTMLElement {
     const groups = this.board?.groups || [];
     if (!groups.length) return 0;
     const raw = localStorage.getItem(GROUP_KEY);
+    if (raw === 'all') return 'all';
     if (raw != null && raw !== '') {
       const saved = Number(raw);
       if (groups.some((g) => g.id === saved)) return saved;
@@ -342,6 +343,11 @@ class SwApp extends HTMLElement {
         await this.refreshData();
         return;
       }
+      case 'toggle-owned':
+        if (detail.owned) await this.api.put('/api/owned/' + detail.symbolId, {});
+        else await this.api.del('/api/owned/' + detail.symbolId);
+        await this.refreshData();
+        return;
       case 'add':
         await this.api.post('/api/groups/' + this.groupId() + '/symbols', {
           asset_class: detail.hit.asset_class,

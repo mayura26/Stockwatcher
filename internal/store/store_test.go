@@ -22,13 +22,16 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(board.Groups) != 2 || board.Groups[0].Name != "Notable" || !board.Groups[0].Synthetic || len(board.Groups[0].Rows) != 0 {
+	if len(board.Groups) != 3 || board.Groups[0].Name != "Notable" || board.Groups[0].Kind != "notable" || !board.Groups[0].Synthetic || len(board.Groups[0].Rows) != 0 {
 		t.Fatalf("%+v", board.Groups)
 	}
-	if board.Groups[1].Name != "Watch" || board.Groups[1].Color != "#c6a15b" || board.Groups[1].Icon != "mark" {
+	if board.Groups[1].Name != "Owned" || board.Groups[1].Kind != "owned" || board.Groups[1].ID != OwnedGroupID || !board.Groups[1].Synthetic || len(board.Groups[1].Rows) != 0 {
 		t.Fatalf("%+v", board.Groups[1])
 	}
-	gid := board.Groups[1].ID
+	if board.Groups[2].Name != "Watch" || board.Groups[2].Color != "#c6a15b" || board.Groups[2].Icon != "mark" {
+		t.Fatalf("%+v", board.Groups[2])
+	}
+	gid := board.Groups[2].ID
 	sym, created, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Future, Display: "ES", ProviderSymbol: "ES=F", Name: "E-mini S&P 500"})
 	if err != nil || !created {
 		t.Fatal(err, created)
@@ -137,10 +140,10 @@ INSERT INTO groups(name, position) VALUES ('Legacy', 0);
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(board.Groups) != 2 || board.Groups[0].Name != "Notable" || !board.Groups[0].Synthetic {
+	if len(board.Groups) != 3 || board.Groups[0].Name != "Notable" || !board.Groups[0].Synthetic || board.Groups[1].Name != "Owned" {
 		t.Fatalf("%+v", board.Groups)
 	}
-	legacy := board.Groups[1]
+	legacy := board.Groups[2]
 	if legacy.Name != "Legacy" || legacy.Color != "#c6a15b" || legacy.Icon != "mark" {
 		t.Fatalf("%+v", legacy)
 	}
@@ -226,6 +229,108 @@ func TestNotableGroup(t *testing.T) {
 	}
 	if !found || stamped.RangeLow == nil || *stamped.RangeLow != 10 || stamped.RangeHigh == nil || *stamped.RangeHigh != 12 {
 		t.Fatalf("stamped %+v", stamped)
+	}
+}
+
+func TestOwnedGroup(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	board, err := st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := groupNamed(t, board, "Watch").ID
+	add := func(display string) Symbol {
+		t.Helper()
+		sym, _, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Stock, Display: display, ProviderSymbol: display, Name: display})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sym
+	}
+	first := add("AAA")
+	second := add("BBB")
+	if err := st.SetOwned(ctx, first.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetOwned(ctx, first.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetOwned(ctx, second.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetOwned(ctx, 99999, true); err != ErrNotFound {
+		t.Fatal(err)
+	}
+	if err := st.UpsertQuote(ctx, second.ID, 16, nil, nil, nil, nil, nil, nil, []float64{11}, 1, true, "", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertRange(ctx, second.ID, "2024-01-02", 10, 12, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	board, err = st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := groupNamed(t, board, "Owned")
+	if len(owned.Rows) != 2 || owned.Rows[0].Display != "AAA" || owned.Rows[1].Display != "BBB" || !owned.Rows[0].Owned {
+		t.Fatalf("%+v", owned.Rows)
+	}
+	watch := groupNamed(t, board, "Watch")
+	var flagged bool
+	for _, row := range watch.Rows {
+		if row.Display == "AAA" && row.Owned {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Fatalf("watch %+v", watch.Rows)
+	}
+
+	if err := st.SetOwned(ctx, first.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetOwned(ctx, first.ID, false); err != ErrNotFound {
+		t.Fatal(err)
+	}
+	if err := st.RemoveFromGroup(ctx, gid, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	board, err = st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned = groupNamed(t, board, "Owned")
+	if len(owned.Rows) != 1 || owned.Rows[0].Display != "BBB" {
+		t.Fatalf("%+v", owned.Rows)
+	}
+	notable := groupNamed(t, board, "Notable")
+	var seen bool
+	for _, row := range notable.Rows {
+		if row.Display == "BBB" && row.Owned {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("notable %+v", notable.Rows)
+	}
+	ticks, err := st.TickSymbols(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ticking bool
+	for _, sym := range ticks {
+		if sym.ID == second.ID {
+			ticking = true
+		}
+	}
+	if !ticking {
+		t.Fatalf("ticks %+v", ticks)
 	}
 }
 
