@@ -16,6 +16,17 @@ const ICONS = [
   { id: 'coin', label: 'Coin', svg: svg('<circle cx="8" cy="8" r="5"></circle><path d="M8 4.8v6.4"></path>') },
   { id: 'bolt', label: 'Bolt', svg: svg('<path d="M9.2 1.8 4.2 8.6h3.1L6.4 14.2 12 7.2H8.8L9.2 1.8Z"></path>') },
   { id: 'layers', label: 'Layers', svg: svg('<path d="M8 2.4 2.4 5.8 8 9.2l5.6-3.4L8 2.4Z"></path><path d="M2.4 8.6 8 12l5.6-3.4"></path>') },
+  { id: 'crypto', label: 'Crypto', svg: svg('<path fill="currentColor" fill-rule="evenodd" stroke="none" d="M3.8 1.3H5.2V3.2H8.2A2.2 2.2 0 0 1 8.2 7.6H5.2V8.4H8.8A2.4 2.4 0 0 1 8.8 13.2H5.2V14.7H3.8ZM5.9 1.3H7.3V14.7H5.9ZM7.6 4.5H8.2A1.05 1.05 0 0 1 8.2 6.6H7.6ZM7.6 9.6H8.6A1.2 1.2 0 0 1 8.6 12H7.6Z"></path>') },
+  { id: 'bank', label: 'Bank', svg: svg('<path d="M1.6 6.4 8 2.2 14.4 6.4"></path><path d="M3.2 6.4h9.6"></path><path d="M4.2 6.4V12"></path><path d="M8 6.4V12"></path><path d="M11.8 6.4V12"></path><path d="M2.4 12.4h11.2"></path>') },
+  { id: 'chip', label: 'Chip', svg: svg('<rect x="4.6" y="4.6" width="6.8" height="6.8"></rect><path d="M6.6 4.6V2"></path><path d="M9.4 4.6V2"></path><path d="M6.6 14v-2.6"></path><path d="M9.4 14v-2.6"></path><path d="M4.6 6.6H2"></path><path d="M4.6 9.4H2"></path><path d="M14 6.6h-2.6"></path><path d="M14 9.4h-2.6"></path>') },
+  { id: 'memory', label: 'Memory', svg: svg('<path d="M2.2 4h11.6v7.2H2.2Z"></path><path d="M4.8 4v2.4"></path><path d="M8 4v2.4"></path><path d="M11.2 4v2.4"></path><path d="M5 11.2v1.8"></path><path d="M8 11.2v1.8"></path><path d="M11 11.2v1.8"></path>') },
+  { id: 'ai', label: 'AI', svg: svg('<circle cx="8" cy="8" r="1.4" fill="currentColor" stroke="none"></circle><circle cx="8" cy="2.6" r="1.15" fill="currentColor" stroke="none"></circle><circle cx="2.8" cy="12.6" r="1.15" fill="currentColor" stroke="none"></circle><circle cx="13.2" cy="12.6" r="1.15" fill="currentColor" stroke="none"></circle><path d="M8 6.6V3.8"></path><path d="M6.8 8.7 3.7 11.6"></path><path d="M9.2 8.7 12.3 11.6"></path>') },
+  { id: 'energy', label: 'Energy', svg: svg('<path d="M8 2.2c1.6 2.2 3.4 4 3.4 6.3a3.4 3.4 0 0 1-6.8 0c0-2.3 1.8-4.1 3.4-6.3Z"></path>') },
+  { id: 'pulse', label: 'Pulse', svg: svg('<path d="M1.2 8h3l1.7-4.2 2.6 7.6L10.2 8H14.8"></path>') },
+  { id: 'cloud', label: 'Cloud', svg: svg('<path d="M4.2 12.2h7a2.3 2.3 0 0 0 0-4.6 3.1 3.1 0 0 0-5.8-.4 2.6 2.6 0 0 0-1.2 5Z"></path>') },
+  { id: 'factory', label: 'Factory', svg: svg('<path d="M1.8 13.4V6.6l3.2 2.8V6.6l3.2 2.8V3.2H14v10.2"></path><path d="M1.8 13.4H14"></path>') },
+  { id: 'house', label: 'House', svg: svg('<path d="M2 7.4 8 2.2l6 5.2"></path><path d="M3.6 7.2v6.2h8.8V7.2"></path><path d="M6.9 13.4V9.6h2.2v3.8"></path>') },
+  { id: 'shield', label: 'Shield', svg: svg('<path d="M8 1.8 13.2 4v4.4c0 3.2-2.2 5-5.2 5.8-3-.8-5.2-2.6-5.2-5.8V4L8 1.8Z"></path>') },
 ];
 
 class SwBoard extends HTMLElement {

@@ -509,7 +509,7 @@ func cleanAppearance(color, icon string) (string, string, error) {
 		return "", "", errors.New("unknown color")
 	}
 	switch icon {
-	case "mark", "eye", "chart", "coin", "bolt", "layers":
+	case "mark", "eye", "chart", "coin", "bolt", "layers", "crypto", "bank", "chip", "memory", "ai", "energy", "pulse", "cloud", "factory", "house", "shield":
 	default:
 		return "", "", errors.New("unknown icon")
 	}
