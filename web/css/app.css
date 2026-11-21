@@ -223,9 +223,19 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
   flex-direction: column;
   align-items: flex-end;
   justify-self: end;
-  min-height: 36px;
+  gap: 0.05rem;
   padding: 0 0.15rem;
 }
+.day-ext {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+.day-ext[hidden] { display: none; }
+.day-ext .chg-h,
+.day-ext .chg { font-size: 0.62rem; }
+.day-ext .chg-h { color: var(--muted); }
 .card-px[aria-expanded="true"] .day { color: var(--brass); }
 .more {
   grid-column: 1 / -1;

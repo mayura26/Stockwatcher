@@ -349,11 +349,14 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, res string, candles []market.Candle) {
-	var price, changeD *float64
+	var price, changeD, extPct *float64
+	var extSession string
 	if q, err := s.Store.Quote(r.Context(), sym.ID); err == nil {
 		v := q.Price
 		price = &v
 		changeD = q.ChangeD
+		extSession = q.ExtSession
+		extPct = q.ExtPct
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"symbol": map[string]any{
@@ -363,6 +366,8 @@ func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Sym
 			"asset_class": sym.AssetClass,
 			"price":       price,
 			"change_d":    changeD,
+			"ext_session": extSession,
+			"ext_pct":     extPct,
 		},
 		"resolution": res,
 		"bars":       candles,

@@ -53,12 +53,19 @@ func (c *Client) Chart(ctx context.Context, symbol, rng string, adjust bool) (ma
 
 // Intraday loads about five days of unadjusted 5-minute closes.
 // Point time is the bar close, so it lines up with the live price.
-func (c *Client) Intraday(ctx context.Context, symbol string) ([]market.Point, error) {
+// prepost asks Yahoo for premarket and after-hours bars. The returned points
+// stay inside the regular session, and Extended is that extra print versus
+// the regular price. Futures leave prepost false so the overnight session
+// stays in the series.
+func (c *Client) Intraday(ctx context.Context, symbol string, prepost bool) ([]market.Point, Extended, error) {
 	c.pace()
 	u := c.base() + "/v8/finance/chart/" + url.PathEscape(symbol) + "?range=5d&interval=5m"
+	if prepost {
+		u += "&includePrePost=true"
+	}
 	body, err := c.fetch(ctx, symbol, u)
 	if err != nil {
-		return nil, err
+		return nil, Extended{}, err
 	}
 	return ParseIntraday(body)
 }
@@ -242,11 +249,31 @@ func ParseChart(data []byte, adjust bool) (market.Quote, []market.Bar, error) {
 
 const intradayStep = 5 * time.Minute
 
+// Extended is a premarket or after-hours percent versus the regular price.
+// Session is "pre" or "post". An empty Session means nothing to show.
+type Extended struct {
+	Session string
+	Pct     *float64
+}
+
+type sessionWindow struct {
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
+}
+
 // ParseIntraday decodes a Yahoo v8 chart of 5-minute bars into close prints.
-func ParseIntraday(data []byte) ([]market.Point, error) {
+// When the payload includes premarket and after-hours windows, those bars are
+// left out of the points (so the sparkline stays the regular session) and the
+// newest of them becomes Extended, versus regularMarketPrice. A later regular
+// bar clears it. A flat 0% still counts.
+func ParseIntraday(data []byte) ([]market.Point, Extended, error) {
 	var env struct {
 		Chart struct {
 			Result []struct {
+				Meta struct {
+					RegularMarketPrice float64         `json:"regularMarketPrice"`
+					TradingPeriods     json.RawMessage `json:"tradingPeriods"`
+				} `json:"meta"`
 				Timestamp  []int64 `json:"timestamp"`
 				Indicators struct {
 					Quote []struct {
@@ -261,7 +288,7 @@ func ParseIntraday(data []byte) ([]market.Point, error) {
 		} `json:"chart"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, err
+		return nil, Extended{}, err
 	}
 	if env.Chart.Error != nil {
 		msg := env.Chart.Error.Description
@@ -271,25 +298,89 @@ func ParseIntraday(data []byte) ([]market.Point, error) {
 		if msg == "" {
 			msg = "yahoo chart error"
 		}
-		return nil, fmt.Errorf("%s", msg)
+		return nil, Extended{}, fmt.Errorf("%s", msg)
 	}
 	if len(env.Chart.Result) == 0 {
-		return nil, fmt.Errorf("yahoo returned no chart")
+		return nil, Extended{}, fmt.Errorf("yahoo returned no chart")
 	}
 	res := env.Chart.Result[0]
 	var closes []*float64
 	if len(res.Indicators.Quote) > 0 {
 		closes = res.Indicators.Quote[0].Close
 	}
+	preW, regW, postW := splitSessions(res.Meta.TradingPeriods)
+	filterRegular := len(regW) > 0 && (len(preW) > 0 || len(postW) > 0)
 	points := make([]market.Point, 0, len(res.Timestamp))
+	var lastReg, bestTs int64
+	var bestPx float64
+	var bestSession string
 	for i, ts := range res.Timestamp {
 		cl := at(closes, i)
 		if cl == nil || *cl == 0 {
 			continue
 		}
-		points = append(points, market.Point{Time: barStart(ts).Add(intradayStep), Price: *cl})
+		kind := ""
+		switch {
+		case inWindow(ts, regW):
+			kind = "regular"
+		case inWindow(ts, postW):
+			kind = "post"
+		case inWindow(ts, preW):
+			kind = "pre"
+		}
+		if !filterRegular || kind == "regular" {
+			points = append(points, market.Point{Time: barStart(ts).Add(intradayStep), Price: *cl})
+		}
+		if kind == "regular" && ts >= lastReg {
+			lastReg = ts
+		}
+		if (kind == "pre" || kind == "post") && ts >= bestTs {
+			bestTs = ts
+			bestPx = *cl
+			bestSession = kind
+		}
 	}
-	return points, nil
+	return points, extendedMove(res.Meta.RegularMarketPrice, lastReg, bestTs, bestPx, bestSession), nil
+}
+
+func splitSessions(raw json.RawMessage) (pre, regular, post []sessionWindow) {
+	if len(raw) == 0 || raw[0] != '{' {
+		return
+	}
+	var keyed struct {
+		Pre     [][]sessionWindow `json:"pre"`
+		Regular [][]sessionWindow `json:"regular"`
+		Post    [][]sessionWindow `json:"post"`
+	}
+	if err := json.Unmarshal(raw, &keyed); err != nil {
+		return
+	}
+	return flattenWindows(keyed.Pre), flattenWindows(keyed.Regular), flattenWindows(keyed.Post)
+}
+
+func flattenWindows(days [][]sessionWindow) []sessionWindow {
+	var out []sessionWindow
+	for _, day := range days {
+		out = append(out, day...)
+	}
+	return out
+}
+
+func inWindow(ts int64, windows []sessionWindow) bool {
+	for _, w := range windows {
+		if ts >= w.Start && ts <= w.End {
+			return true
+		}
+	}
+	return false
+}
+
+func extendedMove(regular float64, lastReg, bestTs int64, bestPx float64, session string) Extended {
+	if session == "" || regular <= 0 || bestPx <= 0 || bestTs <= lastReg {
+		return Extended{}
+	}
+	v := (bestPx/regular - 1) * 100
+	return Extended{Session: session, Pct: &v}
 }
 
 // ParseCandles decodes a Yahoo intraday chart into OHLC. Time is the bar open.

@@ -20,6 +20,9 @@ const (
 // own day (or 24h) percent should be stored as-is.
 // IntradaySet means this refresh loaded 5-minute closes into Intraday.
 // A failed load leaves IntradaySet false so stored 1H and 4H stay put.
+// ExtSet means this refresh decided the extended-hours percent. A failed load
+// leaves ExtSet false so a stored Pre or After stays put. ExtSession is
+// "pre" or "post" when ExtPct should be shown.
 type Quote struct {
 	Price       float64
 	PrevClose   float64
@@ -27,6 +30,9 @@ type Quote struct {
 	AsOf        time.Time
 	Intraday    []Point
 	IntradaySet bool
+	ExtSession  string
+	ExtPct      *float64
+	ExtSet      bool
 }
 
 // Point is one intraday print. Time is when that price was printed.

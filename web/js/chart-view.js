@@ -38,6 +38,7 @@ class SwChart extends HTMLElement {
           </div>
           <div class="px-block">
             <div class="px num" data-price></div>
+            <div class="day-ext" data-ext hidden></div>
             <div class="chg" data-change></div>
           </div>
         </header>
@@ -179,6 +180,7 @@ class SwChart extends HTMLElement {
 
   applyHeader() {
     const sym = this.payload?.symbol || {};
+    const source = this.live || sym;
     const price = this.live?.price ?? sym.price;
     const change = this.live?.change_d ?? sym.change_d;
     const bars = this.payload?.bars || [];
@@ -191,6 +193,15 @@ class SwChart extends HTMLElement {
     const ch = this.querySelector('[data-change]');
     ch.textContent = formatPct(change);
     ch.className = 'chg ' + pctClass(change);
+    const ext = this.querySelector('[data-ext]');
+    const label = source.ext_session === 'pre' ? 'Pre' : source.ext_session === 'post' ? 'After' : '';
+    if (label && source.ext_pct != null) {
+      ext.hidden = false;
+      ext.innerHTML = `<span class="chg-h">${label}</span><span class="chg ${pctClass(source.ext_pct)}">${formatPct(source.ext_pct)}</span>`;
+    } else {
+      ext.hidden = true;
+      ext.textContent = '';
+    }
   }
 
   async loadAlerts() {

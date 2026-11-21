@@ -146,7 +146,7 @@ class SwBoard extends HTMLElement {
           </button>`;
       const price = `<button type="button" class="card-px" data-expand="${row.id}" aria-expanded="${expanded}">
             <span class="px num ${priceTone(row.change_d)}">${formatPrice(row.price)}</span>
-            <span class="day"><span class="chg-h">D</span>${chg(row.change_d)}</span>
+            <span class="day">${extLine(row)}${chg(row.change_d)}</span>
           </button>`;
       const more = open ? `<div class="more">${rangeMeter(row)}<div class="more-chgs">
             <span class="more-cell"><span class="chg-h">1H</span>${chg(row.change_1h)}</span>
@@ -333,6 +333,18 @@ function chipColor(value) {
 
 function chg(n) {
   return `<span class="chg ${pctClass(n)}">${formatPct(n)}</span>`;
+}
+
+function extLine(row) {
+  const label = extLabel(row.ext_session);
+  if (!label || row.ext_pct == null) return '';
+  return `<span class="day-ext"><span class="chg-h">${label}</span>${chg(row.ext_pct)}</span>`;
+}
+
+function extLabel(session) {
+  if (session === 'pre') return 'Pre';
+  if (session === 'post') return 'After';
+  return '';
 }
 
 function sparkHit(row, editing) {

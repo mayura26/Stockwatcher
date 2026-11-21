@@ -113,6 +113,7 @@ func (s *Syncer) RefreshQuote(ctx context.Context, id int64) error {
 func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *market.Quote) {
 	var (
 		points []market.Point
+		ext    yahoo.Extended
 		err    error
 	)
 	switch class {
@@ -120,7 +121,7 @@ func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *
 		if s.Yahoo == nil {
 			return
 		}
-		points, err = s.Yahoo.Intraday(ctx, provider)
+		points, ext, err = s.Yahoo.Intraday(ctx, provider, class == market.Stock)
 	case market.Crypto:
 		if s.Binance == nil {
 			return
@@ -135,6 +136,11 @@ func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *
 	}
 	q.Intraday = points
 	q.IntradaySet = true
+	if class == market.Stock {
+		q.ExtSession = ext.Session
+		q.ExtPct = ext.Pct
+		q.ExtSet = true
+	}
 }
 
 // Candles loads 5m, 1H, or 4H bars for a chart. They are not stored.
@@ -490,7 +496,7 @@ func (s *Syncer) writeQuote(ctx context.Context, class string, id int64, q marke
 		v := q.PrevClose
 		prev = &v
 	}
-	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, h1, h4, spark, asOf.Unix(), q.IntradaySet)
+	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, h1, h4, spark, asOf.Unix(), q.IntradaySet, q.ExtSession, q.ExtPct, q.ExtSet)
 }
 
 func (s *Syncer) evalAlerts(ctx context.Context, quotes map[int64]market.Quote) (int, error) {

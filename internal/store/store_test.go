@@ -35,7 +35,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	}
 	day := 1.25
 	h1 := 0.5
-	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, &h1, nil, []float64{1, 2, 3}, time.Now().Unix(), true); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, &h1, nil, []float64{1, 2, 3}, time.Now().Unix(), true, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertBars(ctx, sym.ID, []market.Bar{{Day: "2024-01-02", Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 3}}); err != nil {
@@ -50,7 +50,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if len(watch.Rows) != 1 || row.Display != "ES" || row.Price == nil || *row.Price != 5800 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || row.ChangeH4 != nil || len(row.Sparkline) != 3 || row.Sparkline[2] != 3 {
 		t.Fatalf("%+v", watch.Rows)
 	}
-	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, nil, time.Now().Unix(), false); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	board, err = st.Board(ctx)
@@ -168,7 +168,7 @@ func TestNotableGroup(t *testing.T) {
 	}
 	quote := func(id int64, price float64, spark []float64) {
 		t.Helper()
-		if err := st.UpsertQuote(ctx, id, price, nil, nil, nil, nil, nil, nil, spark, 1, true); err != nil {
+		if err := st.UpsertQuote(ctx, id, price, nil, nil, nil, nil, nil, nil, spark, 1, true, "", nil, false); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.UpsertRange(ctx, id, "2024-01-02", 10, 12, 1); err != nil {
@@ -365,7 +365,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	defer st.Close()
 	ctx := context.Background()
 	h1, h4 := 1.5, -2.0
-	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, &h1, &h4, nil, 2, true); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, &h1, &h4, nil, 2, true, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	q, err := st.Quote(ctx, 1)
@@ -375,7 +375,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	if q.Price != 11 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 {
 		t.Fatalf("%+v", q)
 	}
-	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 3, false); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 3, false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	q, err = st.Quote(ctx, 1)
@@ -384,5 +384,127 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	}
 	if q.Price != 12 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 {
 		t.Fatalf("preserved %+v", q)
+	}
+}
+
+func TestQuoteExtended(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE symbols (
+  id INTEGER PRIMARY KEY,
+  asset_class TEXT NOT NULL,
+  display TEXT NOT NULL,
+  provider_symbol TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE quotes (
+  symbol_id INTEGER PRIMARY KEY,
+  price REAL NOT NULL,
+  prev_close REAL,
+  change_d REAL,
+  change_w REAL,
+  change_m REAL,
+  as_of INTEGER NOT NULL
+);
+INSERT INTO symbols(asset_class, display, provider_symbol, name) VALUES ('stock', 'AAPL', 'AAPL', 'Apple');
+INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	pre := 0.4
+	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, nil, nil, nil, 2, false, "pre", &pre, true); err != nil {
+		t.Fatal(err)
+	}
+	q, err := st.Quote(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Price != 11 || q.ExtSession != "pre" || q.ExtPct == nil || *q.ExtPct != 0.4 {
+		t.Fatalf("%+v", q)
+	}
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 3, false, "", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	q, err = st.Quote(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Price != 12 || q.ExtSession != "pre" || q.ExtPct == nil || *q.ExtPct != 0.4 {
+		t.Fatalf("preserved %+v", q)
+	}
+	flat := 0.0
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 4, false, "post", &flat, true); err != nil {
+		t.Fatal(err)
+	}
+	q, err = st.Quote(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.ExtSession != "post" || q.ExtPct == nil || *q.ExtPct != 0 {
+		t.Fatalf("flat %+v", q)
+	}
+	if err := st.UpsertQuote(ctx, 1, 13, nil, nil, nil, nil, nil, nil, nil, 5, false, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	q, err = st.Quote(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Price != 13 || q.ExtSession != "" || q.ExtPct != nil {
+		t.Fatalf("cleared %+v", q)
+	}
+
+	fresh, err := Open(filepath.Join(t.TempDir(), "fresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	board, err := fresh.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := groupNamed(t, board, "Watch").ID
+	sym, _, err := fresh.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Stock, Display: "AAPL", ProviderSymbol: "AAPL", Name: "Apple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := -1.25
+	if err := fresh.UpsertQuote(ctx, sym.ID, 190, nil, nil, nil, nil, nil, nil, nil, 6, false, "post", &after, true); err != nil {
+		t.Fatal(err)
+	}
+	board, err = fresh.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := groupNamed(t, board, "Watch").Rows[0]
+	if row.ExtSession != "post" || row.ExtPct == nil || *row.ExtPct != -1.25 {
+		t.Fatalf("board %+v", row)
+	}
+	if err := fresh.RemoveFromGroup(ctx, gid, sym.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.CreateAlert(ctx, sym.ID, "above", "once", 200); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.Board(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
