@@ -345,28 +345,24 @@ function rangeMeter(row) {
   const low = row.range_low;
   const high = row.range_high;
   if (low == null || high == null || !(high > low)) return '';
-  const width = high - low;
-  const clamp = (v) => Math.max(0, Math.min(100, ((v - low) / width) * 100));
-  let travel = '';
-  const spark = row.sparkline || [];
-  if (spark.length) {
-    let smin = spark[0];
-    let smax = spark[0];
-    for (const v of spark) {
-      if (v < smin) smin = v;
-      if (v > smax) smax = v;
-    }
-    const a = clamp(smin);
-    const b = clamp(smax);
-    travel = `<span class="range-span" style="left:${a}%;width:${Math.max(b - a, 0.8)}%"></span>`;
-  }
-  let mark = '';
-  if (row.price != null && !Number.isNaN(Number(row.price))) {
-    const price = Number(row.price);
-    const tone = price > high ? 'up' : price < low ? 'down' : '';
-    mark = `<span class="range-mark ${tone}" style="left:${clamp(price)}%"></span>`;
-  }
-  return `<div class="range"><div class="range-scale num"><span>${formatPrice(low)}</span><span>${formatPrice(high)}</span></div><div class="range-track">${travel}${mark}</div></div>`;
+  const mid = (Number(low) + Number(high)) / 2;
+  if (!(mid > 0)) return '';
+  const expected = (Number(high) / mid - 1) * 100;
+  if (!(expected > 0)) return '';
+  const day = Number(row.change_d);
+  const price = Number(row.price);
+  const today = Number.isFinite(day) ? day : (Number.isFinite(price) ? (price / mid - 1) * 100 : NaN);
+  if (!Number.isFinite(today)) return '';
+  const outside = Math.abs(today) > expected;
+  // A tenth past the day's move keeps the pointer off the cap. A -2% day draws ±2.2%.
+  const scale = outside ? Math.abs(today) * 1.1 : expected;
+  const at = (v) => ((v + scale) / (2 * scale)) * 100;
+  const bounds = outside
+    ? `<span class="range-tick" style="left:${at(-expected)}%"></span><span class="range-tick" style="left:${at(expected)}%"></span>`
+    : '';
+  const ticks = `${bounds}<span class="range-zero" style="left:${at(0)}%"></span>`;
+  const tone = today > expected ? 'up' : today < -expected ? 'down' : '';
+  return `<div class="range"><div class="range-scale num"><span>${formatPct(-scale)}</span><span>${formatPct(scale)}</span></div><div class="range-track">${ticks}<span class="range-mark ${tone}" style="left:${at(today)}%"></span></div></div>`;
 }
 
 function sparkline(values, change) {

@@ -50,7 +50,7 @@ func TestRefreshRangesSkipsCurrentBasis(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2024, 6, 15, 12, 0, 0, 0, ny)
-	if err := st.UpsertRange(ctx, sym.ID, "2024-06-14", 1, 2, 1); err != nil {
+	if err := st.UpsertRange(ctx, sym.ID, "2024-06-13", 1, 2, 1); err != nil {
 		t.Fatal(err)
 	}
 	sy := New(st, &finnhub.Client{}, &yahoo.Client{}, &binance.Client{}, nil)
@@ -62,11 +62,11 @@ func TestRefreshRangesSkipsCurrentBasis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.BasisDay != "2024-06-14" || got.Low != 1 || got.High != 2 || got.ComputedAt != 1 {
+	if got.BasisDay != "2024-06-13" || got.Low != 1 || got.High != 2 || got.ComputedAt != 1 {
 		t.Fatalf("current basis was rewritten: %+v", got)
 	}
 
-	if err := st.UpsertRange(ctx, sym.ID, "2024-06-13", 1, 2, 1); err != nil {
+	if err := st.UpsertRange(ctx, sym.ID, "2024-06-12", 1, 2, 1); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := sy.RefreshRanges(ctx); err != nil || n != 1 {
@@ -76,11 +76,11 @@ func TestRefreshRangesSkipsCurrentBasis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	low, high, ok := market.ExpectedBand(market.CompletedBars(market.Stock, bars, now))
+	low, high, ok := market.ExpectedBand(market.BandBars(market.Stock, bars, now))
 	if !ok {
 		t.Fatal("band")
 	}
-	if got.BasisDay != "2024-06-14" || got.ComputedAt != now.Unix() || math.Abs(got.Low-low) > 1e-9 || math.Abs(got.High-high) > 1e-9 {
+	if got.BasisDay != "2024-06-13" || got.ComputedAt != now.Unix() || math.Abs(got.Low-low) > 1e-9 || math.Abs(got.High-high) > 1e-9 {
 		t.Fatalf("stale basis %+v want %v %v", got, low, high)
 	}
 }

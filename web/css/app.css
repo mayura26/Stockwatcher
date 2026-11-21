@@ -252,12 +252,15 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
   margin-top: 0.4rem;
   background: var(--line);
 }
-.range-span {
+.range-tick, .range-zero {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  background: rgba(232, 224, 204, 0.28);
+  top: -0.12rem;
+  width: 1px;
+  height: 0.59rem;
+  background: var(--muted);
+  transform: translateX(-50%);
 }
+.range-zero { background: var(--ink); height: 0.72rem; top: -0.18rem; }
 .range-mark {
   position: absolute;
   top: 50%;

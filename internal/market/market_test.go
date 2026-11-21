@@ -294,6 +294,43 @@ func TestCompletedBarsDropsFormingSession(t *testing.T) {
 	}
 }
 
+func TestBandBarsKeepsPriorCloseAfterTheSession(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bars := []Bar{
+		{Day: "2024-01-11", Close: 100},
+		{Day: "2024-01-12", Close: 86},
+	}
+	fridayOpen := time.Date(2024, 1, 12, 15, 0, 0, 0, ny)
+	fridayClose := time.Date(2024, 1, 12, 16, 30, 0, 0, ny)
+	saturday := time.Date(2024, 1, 13, 12, 0, 0, 0, ny)
+	for _, now := range []time.Time{fridayOpen, fridayClose, saturday} {
+		got := BandBars(Stock, bars, now)
+		if len(got) != 1 || got[0].Day != "2024-01-11" {
+			t.Fatalf("%s %+v", now, got)
+		}
+		if ScoredDay(Stock, "2024-01-12", now) != "2024-01-12" {
+			t.Fatalf("scored %s", now)
+		}
+	}
+	monday := time.Date(2024, 1, 15, 10, 0, 0, 0, ny)
+	withMonday := append(append([]Bar{}, bars...), Bar{Day: "2024-01-15", Close: 87})
+	got := BandBars(Stock, withMonday, monday)
+	if len(got) != 2 || got[1].Day != "2024-01-12" {
+		t.Fatalf("monday %+v", got)
+	}
+	// Premarket, before Monday's bar exists, the new session is already the one being scored.
+	pre := time.Date(2024, 1, 15, 8, 0, 0, 0, ny)
+	if BandBasis(Stock, "2024-01-12", "2024-01-11", pre) != "2024-01-12" {
+		t.Fatal("premarket basis")
+	}
+	if BandBasis(Stock, "2024-01-12", "2024-01-11", saturday) != "2024-01-11" {
+		t.Fatal("weekend basis")
+	}
+}
+
 func TestScaleOHLC(t *testing.T) {
 	o, h, l, c := ScaleOHLC(100, 110, 90, 100, 50)
 	near(t, o, 50)

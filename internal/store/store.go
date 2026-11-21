@@ -546,7 +546,23 @@ func outsideBand(row Row) bool {
 			return true
 		}
 	}
-	return false
+	return dayBeyond(row.ChangeD, low, high)
+}
+
+func dayBeyond(change *float64, low, high float64) bool {
+	if change == nil {
+		return false
+	}
+	expected := bandPercent(low, high)
+	return expected > 0 && (*change > expected || *change < -expected)
+}
+
+func bandPercent(low, high float64) float64 {
+	mid := (low + high) / 2
+	if mid <= 0 || high <= low {
+		return 0
+	}
+	return (high/mid - 1) * 100
 }
 
 func excursion(row Row) float64 {
@@ -572,6 +588,22 @@ func excursion(row Row) float64 {
 	}
 	for _, p := range row.Sparkline {
 		consider(p)
+	}
+	if row.ChangeD != nil {
+		expected := bandPercent(low, high)
+		if expected > 0 {
+			over := *row.ChangeD
+			if over < 0 {
+				over = -over
+			}
+			over -= expected
+			if over > 0 {
+				d := over / (2 * expected)
+				if d > best {
+					best = d
+				}
+			}
+		}
 	}
 	return best
 }

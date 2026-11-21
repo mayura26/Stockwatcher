@@ -322,10 +322,10 @@ func (s *Syncer) Tick(ctx context.Context) error {
 	return nil
 }
 
-// RefreshRanges rewrites a cached band for every watched symbol whose latest
-// completed session is newer than basis_day. A current band is left untouched.
-// History is read only for the symbols that moved forward a session. The count
-// is how many bands were written.
+// RefreshRanges rewrites a cached band when the prior close it is centered on
+// is no longer basis_day. The session the blotter is scoring is left out, so
+// a closed day stays measured against the close before it. A current band is
+// left untouched. The count is how many bands were written.
 func (s *Syncer) RefreshRanges(ctx context.Context) (int, error) {
 	statuses, err := s.Store.RangeStatuses(ctx)
 	if err != nil {
@@ -334,7 +334,7 @@ func (s *Syncer) RefreshRanges(ctx context.Context) (int, error) {
 	now := s.now()
 	n := 0
 	for _, st := range statuses {
-		basis := market.CompletedDay(st.AssetClass, st.LastDay, st.PrevDay, now)
+		basis := market.BandBasis(st.AssetClass, st.LastDay, st.PrevDay, now)
 		if basis == "" || basis == st.BasisDay {
 			continue
 		}
@@ -342,9 +342,12 @@ func (s *Syncer) RefreshRanges(ctx context.Context) (int, error) {
 		if err != nil {
 			return n, err
 		}
-		done := market.CompletedBars(st.AssetClass, bars, now)
+		done := market.BandBars(st.AssetClass, bars, now)
+		if len(done) == 0 || done[len(done)-1].Day != basis {
+			continue
+		}
 		low, high, ok := market.ExpectedBand(done)
-		if !ok || len(done) == 0 || done[len(done)-1].Day != basis {
+		if !ok {
 			continue
 		}
 		if err := s.Store.UpsertRange(ctx, st.SymbolID, basis, low, high, now.Unix()); err != nil {

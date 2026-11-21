@@ -377,6 +377,53 @@ func CompletedDay(class, lastDay, prevDay string, now time.Time) string {
 	return lastDay
 }
 
+// ScoredDay is the session whose move the blotter is still showing. A closed
+// session stays the scored day through the weekend, so the band keeps using
+// the prior close. Once the next session has started, that new day is scored
+// even if its bar is not stored yet.
+func ScoredDay(class, lastDay string, now time.Time) string {
+	if lastDay == "" {
+		return ""
+	}
+	today := todayFor(class, now)
+	if sessionForming(class, now) && lastDay < today {
+		return today
+	}
+	return lastDay
+}
+
+// BandBasis is the session the expected band is centered on: the close before
+// the scored day. prevDay is the bar before lastDay. An empty string means
+// there is no prior close yet.
+func BandBasis(class, lastDay, prevDay string, now time.Time) string {
+	scored := ScoredDay(class, lastDay, now)
+	if scored == "" {
+		return ""
+	}
+	if lastDay < scored {
+		return lastDay
+	}
+	return prevDay
+}
+
+// BandBars drops the session being scored. The expected move is then centered
+// on the prior close, and the day's own return is not part of the deviation.
+// bars must be ordered by day.
+func BandBars(class string, bars []Bar, now time.Time) []Bar {
+	if len(bars) == 0 {
+		return bars
+	}
+	scored := ScoredDay(class, bars[len(bars)-1].Day, now)
+	if scored == "" {
+		return bars
+	}
+	i := len(bars)
+	for i > 0 && bars[i-1].Day >= scored {
+		i--
+	}
+	return bars[:i]
+}
+
 // ExpectedBand is the last close ± one sample standard deviation of the last
 // 20 close-to-close simple returns. The band is centered on that close, with
 // no drift term. ok is false with fewer than 21 closes or a zero deviation,
