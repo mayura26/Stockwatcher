@@ -66,6 +66,17 @@ func (c *Client) Tickers(ctx context.Context, symbols []string) (map[string]mark
 	return ParseTickers(body)
 }
 
+// Intraday loads the last 60 five-minute closes, enough for a 4-hour lookback.
+// Point time is the candle close.
+func (c *Client) Intraday(ctx context.Context, symbol string) ([]market.Point, error) {
+	u := c.base() + "/api/v3/klines?symbol=" + url.QueryEscape(symbol) + "&interval=5m&limit=60"
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIntraday(body)
+}
+
 // DailyBars loads daily klines. full walks about five years; otherwise a short tail.
 func (c *Client) DailyBars(ctx context.Context, symbol string, full bool) ([]market.Bar, error) {
 	if !full {
@@ -256,8 +267,28 @@ func ParseTickers(data []byte) (map[string]market.Quote, error) {
 	return out, nil
 }
 
-// ParseKlines decodes spot klines. Open time is the UTC session date.
-func ParseKlines(data []byte) ([]market.Bar, error) {
+// ParseIntraday decodes spot klines into close prints. Time is the candle close.
+func ParseIntraday(data []byte) ([]market.Point, error) {
+	rows, err := decodeKlines(data)
+	if err != nil {
+		return nil, err
+	}
+	points := make([]market.Point, 0, len(rows))
+	for _, row := range rows {
+		if len(row) < 7 {
+			continue
+		}
+		cl, ok := asFloat(row[4])
+		closeMS, okT := asInt64(row[6])
+		if !ok || !okT || cl == 0 {
+			continue
+		}
+		points = append(points, market.Point{Time: time.UnixMilli(closeMS), Price: cl})
+	}
+	return points, nil
+}
+
+func decodeKlines(data []byte) ([][]any, error) {
 	var rows [][]any
 	if err := json.Unmarshal(data, &rows); err != nil {
 		var apiErr struct {
@@ -266,6 +297,15 @@ func ParseKlines(data []byte) ([]market.Bar, error) {
 		if jerr := json.Unmarshal(data, &apiErr); jerr == nil && apiErr.Msg != "" {
 			return nil, fmt.Errorf("binance: %s", apiErr.Msg)
 		}
+		return nil, err
+	}
+	return rows, nil
+}
+
+// ParseKlines decodes spot klines. Open time is the UTC session date.
+func ParseKlines(data []byte) ([]market.Bar, error) {
+	rows, err := decodeKlines(data)
+	if err != nil {
 		return nil, err
 	}
 	bars := make([]market.Bar, 0, len(rows))

@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS quotes (
   change_d REAL,
   change_w REAL,
   change_m REAL,
+  change_1h REAL,
+  change_4h REAL,
   as_of INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS bars (
@@ -152,7 +154,10 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureAlertRepeat(); err != nil {
 		return err
 	}
-	return s.ensureGroupAppearance()
+	if err := s.ensureGroupAppearance(); err != nil {
+		return err
+	}
+	return s.ensureQuoteHourly()
 }
 
 // ensureAlertRepeat adds the repeat column on databases created before one-off
@@ -224,6 +229,44 @@ func (s *Store) ensureGroupAppearance() error {
 	return nil
 }
 
+// ensureQuoteHourly adds 1H and 4H percents on databases created before them.
+func (s *Store) ensureQuoteHourly() error {
+	rows, err := s.db.Query(`PRAGMA table_info(quotes)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has1, has4 := false, false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		switch name {
+		case "change_1h":
+			has1 = true
+		case "change_4h":
+			has4 = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !has1 {
+		if _, err := s.db.Exec(`ALTER TABLE quotes ADD COLUMN change_1h REAL`); err != nil {
+			return err
+		}
+	}
+	if !has4 {
+		if _, err := s.db.Exec(`ALTER TABLE quotes ADD COLUMN change_4h REAL`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) ensureGroup() error {
 	_, err := s.db.Exec(`INSERT INTO groups(name, position) SELECT 'Watch', 0 WHERE NOT EXISTS (SELECT 1 FROM groups)`)
 	return err
@@ -238,6 +281,8 @@ type Row struct {
 	ChangeD    *float64 `json:"change_d"`
 	ChangeW    *float64 `json:"change_w"`
 	ChangeM    *float64 `json:"change_m"`
+	ChangeH1   *float64 `json:"change_1h"`
+	ChangeH4   *float64 `json:"change_4h"`
 	AsOf       *int64   `json:"as_of"`
 	Position   int      `json:"position"`
 }
@@ -261,7 +306,7 @@ func (s *Store) Board(ctx context.Context) (Board, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT g.id, g.name, g.color, g.icon, g.position,
        s.id, s.display, s.name, s.asset_class,
-       q.price, q.change_d, q.change_w, q.change_m, q.as_of,
+       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.as_of,
        gs.position
 FROM groups g
 LEFT JOIN group_symbols gs ON gs.group_id = g.id
@@ -281,10 +326,11 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			sid                  sql.NullInt64
 			display, name, cls   sql.NullString
 			price, cd, cw, cm    sql.NullFloat64
+			h1, h4               sql.NullFloat64
 			asOf                 sql.NullInt64
 			spos                 sql.NullInt64
 		)
-		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &asOf, &spos); err != nil {
+		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &asOf, &spos); err != nil {
 			return Board{}, err
 		}
 		i, ok := index[gid]
@@ -309,6 +355,8 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			ChangeD:    floatPtr(cd),
 			ChangeW:    floatPtr(cw),
 			ChangeM:    floatPtr(cm),
+			ChangeH1:   floatPtr(h1),
+			ChangeH4:   floatPtr(h4),
 			AsOf:       intPtr(asOf),
 			Position:   pos,
 		})
@@ -616,14 +664,16 @@ type QuoteRow struct {
 	ChangeD   *float64
 	ChangeW   *float64
 	ChangeM   *float64
+	ChangeH1  *float64
+	ChangeH4  *float64
 	AsOf      int64
 }
 
 func (s *Store) Quote(ctx context.Context, symbolID int64) (QuoteRow, error) {
 	var q QuoteRow
-	var prev, d, w, m sql.NullFloat64
-	err := s.db.QueryRowContext(ctx, `SELECT price, prev_close, change_d, change_w, change_m, as_of FROM quotes WHERE symbol_id = ?`, symbolID).
-		Scan(&q.Price, &prev, &d, &w, &m, &q.AsOf)
+	var prev, d, w, m, h1, h4 sql.NullFloat64
+	err := s.db.QueryRowContext(ctx, `SELECT price, prev_close, change_d, change_w, change_m, change_1h, change_4h, as_of FROM quotes WHERE symbol_id = ?`, symbolID).
+		Scan(&q.Price, &prev, &d, &w, &m, &h1, &h4, &q.AsOf)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QuoteRow{}, ErrNotFound
 	}
@@ -634,20 +684,29 @@ func (s *Store) Quote(ctx context.Context, symbolID int64) (QuoteRow, error) {
 	q.ChangeD = floatPtr(d)
 	q.ChangeW = floatPtr(w)
 	q.ChangeM = floatPtr(m)
+	q.ChangeH1 = floatPtr(h1)
+	q.ChangeH4 = floatPtr(h4)
 	return q, nil
 }
 
-func (s *Store) UpsertQuote(ctx context.Context, symbolID int64, price float64, prev, d, w, m *float64, asOf int64) error {
+// UpsertQuote writes a quote. hourly false keeps change_1h and change_4h already stored.
+func (s *Store) UpsertQuote(ctx context.Context, symbolID int64, price float64, prev, d, w, m, h1, h4 *float64, asOf int64, hourly bool) error {
+	flag := 0
+	if hourly {
+		flag = 1
+	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO quotes(symbol_id, price, prev_close, change_d, change_w, change_m, as_of)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO quotes(symbol_id, price, prev_close, change_d, change_w, change_m, change_1h, change_4h, as_of)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(symbol_id) DO UPDATE SET
   price = excluded.price,
   prev_close = excluded.prev_close,
   change_d = excluded.change_d,
   change_w = excluded.change_w,
   change_m = excluded.change_m,
-  as_of = excluded.as_of`, symbolID, price, prev, d, w, m, asOf)
+  change_1h = CASE WHEN ? THEN excluded.change_1h ELSE quotes.change_1h END,
+  change_4h = CASE WHEN ? THEN excluded.change_4h ELSE quotes.change_4h END,
+  as_of = excluded.as_of`, symbolID, price, prev, d, w, m, h1, h4, asOf, flag, flag)
 	return err
 }
 

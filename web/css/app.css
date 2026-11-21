@@ -162,20 +162,32 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
 
 .sheet-pad, .board, .alerts-screen { padding: 0 1rem; }
 .board { padding-bottom: calc(env(safe-area-inset-bottom) + 1.5rem); }
+.board-scroll { overflow-x: auto; }
 
 .cols, .row-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 4.5rem 2.8rem 2.8rem 2.8rem;
+  grid-template-columns: minmax(7.5rem, 1fr) 4.5rem repeat(5, 3.6rem);
   column-gap: 0.35rem;
   align-items: center;
 }
 .cols {
-  padding: 0.45rem 1.75rem 0.15rem 0;
+  width: calc(100% - 1.75rem);
+  min-width: max-content;
+  box-sizing: border-box;
+  padding: 0.45rem 0 0.15rem;
   color: var(--muted);
   font-size: 0.68rem;
   letter-spacing: 0.08em;
 }
-.asof { letter-spacing: 0; font-size: 0.72rem; white-space: nowrap; }
+.asof {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg);
+  letter-spacing: 0;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
 .chg, .chg-h { text-align: right; }
 .chg { font-size: 0.75rem; font-weight: 500; }
 .row-main > .chg { grid-row: 1 / span 2; }
@@ -188,7 +200,8 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
   grid-template-columns: minmax(0, 1fr) 1.75rem;
   align-items: center;
   color: inherit;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-bottom: 1px solid var(--line-soft);
   text-align: left;
   background: transparent;
@@ -197,17 +210,24 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
 .row-main {
   color: inherit;
   width: 100%;
+  min-width: max-content;
   padding: 0.72rem 0;
   text-align: left;
   background: transparent;
 }
+.ident, .row-x { position: sticky; background: var(--bg); }
+.ident { left: 0; z-index: 1; }
 .row-x {
+  right: 0;
+  z-index: 2;
   width: 1.75rem;
   height: 1.75rem;
   justify-self: center;
   color: var(--muted);
   line-height: 1;
 }
+.row.flash-up .ident, .row.flash-up .row-x { background: color-mix(in srgb, var(--up) 16%, var(--bg)); }
+.row.flash-down .ident, .row.flash-down .row-x { background: color-mix(in srgb, var(--down) 16%, var(--bg)); }
 .row-x:hover, .row-x:focus-visible { color: var(--down); }
 .ident { display: flex; flex-direction: column; min-width: 0; grid-row: 1 / span 2; }
 .px { grid-row: 1 / span 2; justify-self: end; }

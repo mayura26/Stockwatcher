@@ -16,11 +16,21 @@ const (
 
 // Quote is a last price from a provider. DayPct is set when the provider's
 // own day (or 24h) percent should be stored as-is.
+// IntradaySet means this refresh loaded 5-minute closes into Intraday.
+// A failed load leaves IntradaySet false so stored 1H and 4H stay put.
 type Quote struct {
-	Price     float64
-	PrevClose float64
-	DayPct    *float64
-	AsOf      time.Time
+	Price       float64
+	PrevClose   float64
+	DayPct      *float64
+	AsOf        time.Time
+	Intraday    []Point
+	IntradaySet bool
+}
+
+// Point is one intraday print. Time is when that price was printed.
+type Point struct {
+	Time  time.Time
+	Price float64
 }
 
 // Bar is one daily session.
@@ -68,6 +78,33 @@ func Performance(class string, q Quote, bars []Bar, now time.Time) (d, w, m *flo
 			changeVsDate(q.Price, bars, now.UTC().AddDate(0, 0, -30))
 	}
 	return d, changeVsSessions(q.Price, bars, 5), changeVsSessions(q.Price, bars, 21)
+}
+
+// LookbackPct is the percent change from price to the last point at or before
+// asOf minus lookback. A gap uses the previous print. No print that old returns nil.
+func LookbackPct(price float64, points []Point, asOf time.Time, lookback time.Duration) *float64 {
+	if price <= 0 || lookback <= 0 || asOf.IsZero() {
+		return nil
+	}
+	target := asOf.Add(-lookback)
+	var ref float64
+	var refAt time.Time
+	found := false
+	for _, p := range points {
+		if p.Price <= 0 || p.Time.After(target) {
+			continue
+		}
+		if !found || !p.Time.Before(refAt) {
+			ref = p.Price
+			refAt = p.Time
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	v := (price/ref - 1) * 100
+	return &v
 }
 
 func changeVsSessions(price float64, bars []Bar, sessions int) *float64 {

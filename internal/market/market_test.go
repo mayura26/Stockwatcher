@@ -54,6 +54,43 @@ func TestPerformanceSessionsAndCalendar(t *testing.T) {
 	near(t, *cm, (100.0/40.0-1)*100)
 }
 
+func TestLookbackPct(t *testing.T) {
+	asOf := time.Date(2024, 1, 8, 15, 0, 0, 0, time.UTC)
+	points := []Point{
+		{Time: asOf.Add(-4 * time.Hour), Price: 80},
+		{Time: asOf.Add(-1 * time.Hour), Price: 100},
+		{Time: asOf, Price: 110},
+	}
+	h1 := LookbackPct(110, points, asOf, time.Hour)
+	if h1 == nil {
+		t.Fatal("1h nil")
+	}
+	near(t, *h1, 10)
+	h4 := LookbackPct(110, points, asOf, 4*time.Hour)
+	if h4 == nil {
+		t.Fatal("4h nil")
+	}
+	near(t, *h4, (110.0/80.0-1)*100)
+
+	gap := []Point{
+		{Time: asOf.Add(-2 * time.Hour), Price: 50},
+		{Time: asOf.Add(-30 * time.Minute), Price: 60},
+	}
+	got := LookbackPct(75, gap, asOf, time.Hour)
+	if got == nil {
+		t.Fatal("gap nil")
+	}
+	near(t, *got, (75.0/50.0-1)*100)
+
+	short := []Point{{Time: asOf.Add(-30 * time.Minute), Price: 10}}
+	if LookbackPct(12, short, asOf, time.Hour) != nil {
+		t.Fatal("short history should be nil")
+	}
+	if LookbackPct(12, nil, asOf, time.Hour) != nil {
+		t.Fatal("empty history should be nil")
+	}
+}
+
 func TestRollupWeekAndMonth(t *testing.T) {
 	bars := []Bar{
 		{Day: "2024-01-01", Open: 1, High: 3, Low: 0.5, Close: 2},

@@ -44,28 +44,48 @@ func (c *Client) base() string {
 func (c *Client) Chart(ctx context.Context, symbol, rng string, adjust bool) (market.Quote, []market.Bar, error) {
 	c.pace()
 	u := c.base() + "/v8/finance/chart/" + url.PathEscape(symbol) + "?range=" + url.QueryEscape(rng) + "&interval=1d&events=div%2Csplit"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	body, err := c.fetch(ctx, symbol, u)
 	if err != nil {
 		return market.Quote{}, nil, err
+	}
+	return ParseChart(body, adjust)
+}
+
+// Intraday loads about five days of unadjusted 5-minute closes.
+// Point time is the bar close, so it lines up with the live price.
+func (c *Client) Intraday(ctx context.Context, symbol string) ([]market.Point, error) {
+	c.pace()
+	u := c.base() + "/v8/finance/chart/" + url.PathEscape(symbol) + "?range=5d&interval=5m"
+	body, err := c.fetch(ctx, symbol, u)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIntraday(body)
+}
+
+func (c *Client) fetch(ctx context.Context, symbol, u string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("User-Agent", browserUA)
 	req.Header.Set("Accept", "application/json")
 	res, err := c.client().Do(req)
 	if err != nil {
-		return market.Quote{}, nil, err
+		return nil, err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {
-		return market.Quote{}, nil, err
+		return nil, err
 	}
 	if res.StatusCode == http.StatusTooManyRequests {
-		return market.Quote{}, nil, fmt.Errorf("yahoo rate limit for %s", symbol)
+		return nil, fmt.Errorf("yahoo rate limit for %s", symbol)
 	}
 	if res.StatusCode != http.StatusOK {
-		return market.Quote{}, nil, fmt.Errorf("yahoo status %d for %s", res.StatusCode, symbol)
+		return nil, fmt.Errorf("yahoo status %d for %s", res.StatusCode, symbol)
 	}
-	return ParseChart(body, adjust)
+	return body, nil
 }
 
 // DailyBars loads full history (about 5 years) or a short tail.
@@ -207,6 +227,65 @@ func ParseChart(data []byte, adjust bool) (market.Quote, []market.Bar, error) {
 		DayPct:    res.Meta.RegularMarketChangePercent,
 		AsOf:      asOf,
 	}, bars, nil
+}
+
+const intradayStep = 5 * time.Minute
+
+// ParseIntraday decodes a Yahoo v8 chart of 5-minute bars into close prints.
+func ParseIntraday(data []byte) ([]market.Point, error) {
+	var env struct {
+		Chart struct {
+			Result []struct {
+				Timestamp  []int64 `json:"timestamp"`
+				Indicators struct {
+					Quote []struct {
+						Close []*float64 `json:"close"`
+					} `json:"quote"`
+				} `json:"indicators"`
+			} `json:"result"`
+			Error *struct {
+				Code        string `json:"code"`
+				Description string `json:"description"`
+			} `json:"error"`
+		} `json:"chart"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, err
+	}
+	if env.Chart.Error != nil {
+		msg := env.Chart.Error.Description
+		if msg == "" {
+			msg = env.Chart.Error.Code
+		}
+		if msg == "" {
+			msg = "yahoo chart error"
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	if len(env.Chart.Result) == 0 {
+		return nil, fmt.Errorf("yahoo returned no chart")
+	}
+	res := env.Chart.Result[0]
+	var closes []*float64
+	if len(res.Indicators.Quote) > 0 {
+		closes = res.Indicators.Quote[0].Close
+	}
+	points := make([]market.Point, 0, len(res.Timestamp))
+	for i, ts := range res.Timestamp {
+		cl := at(closes, i)
+		if cl == nil || *cl == 0 {
+			continue
+		}
+		points = append(points, market.Point{Time: barStart(ts).Add(intradayStep), Price: *cl})
+	}
+	return points, nil
+}
+
+func barStart(ts int64) time.Time {
+	if ts > 1e12 {
+		return time.UnixMilli(ts)
+	}
+	return time.Unix(ts, 0)
 }
 
 func at(s []*float64, i int) *float64 {

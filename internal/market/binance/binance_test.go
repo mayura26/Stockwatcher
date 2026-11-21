@@ -37,6 +37,20 @@ func TestParseKlines(t *testing.T) {
 	}
 }
 
+func TestParseIntraday(t *testing.T) {
+	raw := []byte(`[[1795132800000,"100","110","90","105","1",1795133099999,"1",1,"1","1","0"]]`)
+	pts, err := ParseIntraday(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 1 || pts[0].Price != 105 || !pts[0].Time.Equal(time.UnixMilli(1795133099999)) {
+		t.Fatalf("%+v", pts)
+	}
+	if _, err := ParseIntraday([]byte(`{"code":-1121,"msg":"Invalid symbol."}`)); err == nil {
+		t.Fatal("expected api error")
+	}
+}
+
 func TestParseExchangeInfoAndSearch(t *testing.T) {
 	raw := []byte(`{"symbols":[
 		{"symbol":"BTCUSDT","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","isSpotTradingAllowed":true},

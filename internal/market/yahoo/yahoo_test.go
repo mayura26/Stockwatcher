@@ -60,6 +60,23 @@ func TestParseYahooError(t *testing.T) {
 	}
 }
 
+func TestParseIntraday(t *testing.T) {
+	raw := []byte(`{"chart":{"result":[{"timestamp":[1700000000,1700000300,1700000600],"indicators":{"quote":[{"close":[10,null,11.5]}]}}],"error":null}}`)
+	pts, err := ParseIntraday(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 2 || pts[0].Price != 10 || pts[1].Price != 11.5 {
+		t.Fatalf("%+v", pts)
+	}
+	if !pts[0].Time.Equal(time.Unix(1700000000, 0).Add(5*time.Minute)) || !pts[1].Time.Equal(time.Unix(1700000600, 0).Add(5*time.Minute)) {
+		t.Fatalf("times %+v", pts)
+	}
+	if _, err := ParseIntraday([]byte(`{"chart":{"result":null,"error":{"description":"No data found"}}}`)); err == nil || err.Error() != "No data found" {
+		t.Fatal(err)
+	}
+}
+
 func mustNY(t *testing.T) *time.Location {
 	t.Helper()
 	loc, err := time.LoadLocation("America/New_York")

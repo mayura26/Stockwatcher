@@ -11,7 +11,7 @@ export function formatPct(n) {
   if (n == null || Number.isNaN(Number(n))) return '—';
   const v = Number(n);
   const sign = v > 0 ? '+' : '';
-  return sign + v.toFixed(2);
+  return sign + v.toFixed(2) + '%';
 }
 
 export function pctClass(n) {

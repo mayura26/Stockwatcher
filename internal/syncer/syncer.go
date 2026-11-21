@@ -63,7 +63,7 @@ func (s *Syncer) Enqueue(id int64) {
 	}()
 }
 
-// RefreshQuote fetches one symbol and stores its price plus D/W/M.
+// RefreshQuote fetches one symbol and stores its price plus D/W/M and, when intraday loads, 1H/4H.
 func (s *Syncer) RefreshQuote(ctx context.Context, id int64) error {
 	sym, err := s.Store.Symbol(ctx, id)
 	if err != nil {
@@ -104,7 +104,37 @@ func (s *Syncer) RefreshQuote(ctx context.Context, id int64) error {
 	default:
 		return fmt.Errorf("unknown asset class %s", sym.AssetClass)
 	}
+	s.attachIntraday(ctx, sym.AssetClass, sym.ProviderSymbol, &q)
 	return s.writeQuote(ctx, sym.AssetClass, id, q)
+}
+
+// attachIntraday loads 5-minute closes. A failed fetch leaves IntradaySet false
+// so the previous 1H and 4H stay on the quote row.
+func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *market.Quote) {
+	var (
+		points []market.Point
+		err    error
+	)
+	switch class {
+	case market.Stock, market.Future:
+		if s.Yahoo == nil {
+			return
+		}
+		points, err = s.Yahoo.Intraday(ctx, provider)
+	case market.Crypto:
+		if s.Binance == nil {
+			return
+		}
+		points, err = s.Binance.Intraday(ctx, provider)
+	default:
+		return
+	}
+	if err != nil {
+		slog.Error("intraday", "symbol", provider, "err", err)
+		return
+	}
+	q.Intraday = points
+	q.IntradaySet = true
 }
 
 // Backfill loads about five years of daily bars. Concurrent callers share one fetch.
@@ -263,6 +293,7 @@ func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) 
 			slog.Error("yahoo quote", "symbol", sym.ProviderSymbol, "err", err)
 			continue
 		}
+		s.attachIntraday(ctx, sym.AssetClass, sym.ProviderSymbol, &q)
 		mu.Lock()
 		quotes[sym.ID] = q
 		mu.Unlock()
@@ -287,6 +318,7 @@ func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) 
 		} else {
 			for provider, q := range got {
 				if id, ok := byProvider[provider]; ok {
+					s.attachIntraday(ctx, market.Crypto, provider, &q)
 					quotes[id] = q
 				}
 			}
@@ -318,6 +350,7 @@ func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) 
 					slog.Error("finnhub quote", "symbol", sym.ProviderSymbol, "err", err)
 					return
 				}
+				s.attachIntraday(ctx, market.Stock, sym.ProviderSymbol, &q)
 				mu.Lock()
 				quotes[sym.ID] = q
 				mu.Unlock()
@@ -357,12 +390,17 @@ func (s *Syncer) writeQuote(ctx context.Context, class string, id int64, q marke
 	if asOf.IsZero() {
 		asOf = s.now()
 	}
+	var h1, h4 *float64
+	if q.IntradaySet {
+		h1 = market.LookbackPct(q.Price, q.Intraday, asOf, time.Hour)
+		h4 = market.LookbackPct(q.Price, q.Intraday, asOf, 4*time.Hour)
+	}
 	var prev *float64
 	if q.PrevClose > 0 {
 		v := q.PrevClose
 		prev = &v
 	}
-	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, asOf.Unix())
+	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, h1, h4, asOf.Unix(), q.IntradaySet)
 }
 
 func (s *Syncer) evalAlerts(ctx context.Context, quotes map[int64]market.Quote) (int, error) {

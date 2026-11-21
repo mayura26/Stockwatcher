@@ -34,8 +34,10 @@ class SwBoard extends HTMLElement {
       <div class="groups" role="tablist"></div>
       <div class="board">
         <div class="edit-slot"></div>
-        <div class="cols"></div>
-        <div class="rows"></div>
+        <div class="board-scroll">
+          <div class="cols"></div>
+          <div class="rows"></div>
+        </div>
         <button type="button" class="add-row" data-act="search" aria-label="Add a symbol">+</button>
       </div>
       ${groupSheet()}`;
@@ -108,7 +110,7 @@ class SwBoard extends HTMLElement {
     }
     const times = rows.map((r) => r.as_of).filter(Boolean);
     const oldest = times.length ? Math.min(...times) : 0;
-    cols.innerHTML = `<span class="asof">${oldest ? escapeHTML(formatClock(oldest)) : ''}</span><span></span><span class="chg-h">D</span><span class="chg-h">W</span><span class="chg-h">M</span>`;
+    cols.innerHTML = `<span class="asof">${oldest ? escapeHTML(formatClock(oldest)) : ''}</span><span></span><span class="chg-h">1H</span><span class="chg-h">4H</span><span class="chg-h">D</span><span class="chg-h">W</span><span class="chg-h">M</span>`;
   }
 
   renderRows(group) {
@@ -126,6 +128,8 @@ class SwBoard extends HTMLElement {
             <span class="sub">${escapeHTML(row.name || '')}</span>
           </span>
           <span class="px num">${formatPrice(row.price)}</span>
+          ${chg(row.change_1h)}
+          ${chg(row.change_4h)}
           ${chg(row.change_d)}
           ${chg(row.change_w)}
           ${chg(row.change_m)}`;

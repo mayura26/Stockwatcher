@@ -31,7 +31,8 @@ func TestBoardGroupsAndLock(t *testing.T) {
 		t.Fatal(err, created)
 	}
 	day := 1.25
-	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, time.Now().Unix()); err != nil {
+	h1 := 0.5
+	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, &h1, nil, time.Now().Unix(), true); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertBars(ctx, sym.ID, []market.Bar{{Day: "2024-01-02", Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 3}}); err != nil {
@@ -41,8 +42,20 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(board.Groups[0].Rows) != 1 || board.Groups[0].Rows[0].Display != "ES" || board.Groups[0].Rows[0].Price == nil || *board.Groups[0].Rows[0].Price != 5800 {
+	row := board.Groups[0].Rows[0]
+	if len(board.Groups[0].Rows) != 1 || row.Display != "ES" || row.Price == nil || *row.Price != 5800 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || row.ChangeH4 != nil {
 		t.Fatalf("%+v", board.Groups[0].Rows)
+	}
+	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, time.Now().Unix(), false); err != nil {
+		t.Fatal(err)
+	}
+	board, err = st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row = board.Groups[0].Rows[0]
+	if row.Price == nil || *row.Price != 5801 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 {
+		t.Fatalf("preserved %+v", row)
 	}
 	ok, err := st.TryLock(ctx, "tick", time.Minute)
 	if err != nil || !ok {
@@ -204,5 +217,70 @@ INSERT INTO alerts(symbol_id, direction, level, status, last_price, created_at) 
 	ok, err = st.NoteContinuousFire(ctx, once.ID, 8, 100)
 	if err != nil || ok {
 		t.Fatal("once alert should not take a continuous fire", err, ok)
+	}
+}
+
+func TestQuoteHourlyMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE symbols (
+  id INTEGER PRIMARY KEY,
+  asset_class TEXT NOT NULL,
+  display TEXT NOT NULL,
+  provider_symbol TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE quotes (
+  symbol_id INTEGER PRIMARY KEY,
+  price REAL NOT NULL,
+  prev_close REAL,
+  change_d REAL,
+  change_w REAL,
+  change_m REAL,
+  as_of INTEGER NOT NULL
+);
+INSERT INTO symbols(asset_class, display, provider_symbol, name) VALUES ('stock', 'AAPL', 'AAPL', 'Apple');
+INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	h1, h4 := 1.5, -2.0
+	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, &h1, &h4, 2, true); err != nil {
+		t.Fatal(err)
+	}
+	q, err := st.Quote(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Price != 11 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 {
+		t.Fatalf("%+v", q)
+	}
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, 3, false); err != nil {
+		t.Fatal(err)
+	}
+	q, err = st.Quote(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Price != 12 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 {
+		t.Fatalf("preserved %+v", q)
 	}
 }
