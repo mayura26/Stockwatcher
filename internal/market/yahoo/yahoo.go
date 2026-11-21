@@ -126,13 +126,25 @@ func (c *Client) Search(ctx context.Context, q string) ([]market.Hit, error) {
 	if q == "" {
 		return nil, nil
 	}
-	c.pace()
-	u := c.base() + "/v1/finance/search?q=" + url.QueryEscape(q) + "&quotesCount=20&newsCount=0"
-	body, err := c.fetch(ctx, q, u)
+	body, err := c.searchOnce(ctx, q)
+	if err != nil && strings.Contains(err.Error(), "rate limit") {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(700 * time.Millisecond):
+		}
+		body, err = c.searchOnce(ctx, q)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return ParseSearch(body)
+}
+
+func (c *Client) searchOnce(ctx context.Context, q string) ([]byte, error) {
+	c.pace()
+	u := c.base() + "/v1/finance/search?q=" + url.QueryEscape(q) + "&quotesCount=20&newsCount=0"
+	return c.fetch(ctx, q, u)
 }
 
 // ParseSearch keeps equities and ETFs. The symbol is the Yahoo listing, such as 005930.KS.

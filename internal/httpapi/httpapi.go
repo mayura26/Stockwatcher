@@ -328,8 +328,9 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 }
 
 // stockSearch asks Finnhub first. Yahoo runs only when that list is empty.
-// The typed US ticker is offered only when both sources are empty, so a name
-// such as "samsung" is not turned into a fake ticker that hides Yahoo.
+// The typed US ticker is offered only after Yahoo has answered with nothing.
+// A failed Yahoo call must not invent "SAMSUNG / US stock", which looks like
+// a listing and hides the miss.
 func (s *Server) stockSearch(r *http.Request, q string) ([]market.Hit, error) {
 	var (
 		hits []market.Hit
@@ -344,6 +345,7 @@ func (s *Server) stockSearch(r *http.Request, q string) ([]market.Hit, error) {
 			hits = nil
 		}
 	}
+	yahooAnswered := s.Sync == nil || s.Sync.Yahoo == nil
 	if len(hits) == 0 && s.Sync != nil && s.Sync.Yahoo != nil {
 		yh, yerr := s.Sync.Yahoo.Search(r.Context(), q)
 		if yerr != nil {
@@ -351,11 +353,14 @@ func (s *Server) stockSearch(r *http.Request, q string) ([]market.Hit, error) {
 			if err == nil {
 				err = yerr
 			}
-		} else if len(yh) > 0 {
-			hits = yh
+		} else {
+			yahooAnswered = true
+			if len(yh) > 0 {
+				hits = yh
+			}
 		}
 	}
-	if len(hits) == 0 {
+	if len(hits) == 0 && yahooAnswered {
 		hits = withManualStock(nil, q)
 	}
 	return hits, err

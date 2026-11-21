@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"stockwatcher/internal/config"
@@ -62,6 +63,28 @@ func TestStockSearchSkipsYahooWhenFinnhubHits(t *testing.T) {
 	body := getSearch(t, searchHandler(t, finnhubSrv.URL, yahooSrv.URL), "aapl")
 	if len(body.Hits) != 1 || body.Hits[0].ProviderSymbol != "AAPL" {
 		t.Fatalf("%+v", body.Hits)
+	}
+}
+
+func TestStockSearchYahooErrorDoesNotInventTicker(t *testing.T) {
+	finnhubSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"count":0,"result":[]}`))
+	}))
+	defer finnhubSrv.Close()
+	yahooSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "slow", http.StatusTooManyRequests)
+	}))
+	defer yahooSrv.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/search?class=stock&q=samsung", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	searchHandler(t, finnhubSrv.URL, yahooSrv.URL).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "SAMSUNG") {
+		t.Fatalf("invented ticker %s", rec.Body.String())
 	}
 }
 
