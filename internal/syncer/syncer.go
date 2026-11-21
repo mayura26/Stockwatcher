@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -52,13 +53,16 @@ func (s *Syncer) now() time.Time {
 // Enqueue backfills history and a first quote without blocking the add request.
 func (s *Syncer) Enqueue(id int64) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
 		if err := s.Backfill(ctx, id); err != nil {
 			slog.Error("backfill", "symbol", id, "err", err)
 		}
 		if err := s.RefreshQuote(ctx, id); err != nil {
 			slog.Error("quote", "symbol", id, "err", err)
+		}
+		if err := s.RefreshFacts(ctx, id); err != nil {
+			slog.Error("facts", "symbol", id, "err", err)
 		}
 	}()
 }
@@ -324,8 +328,64 @@ func (s *Syncer) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails, "ranges", ranges)
+	facts, err := s.refreshStaleFact(ctx, symbols)
+	if err != nil {
+		if errors.Is(err, finnhub.ErrRateLimit) {
+			slog.Warn("facts rate limit")
+		} else {
+			slog.Error("facts", "err", err)
+		}
+	}
+	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails, "ranges", ranges, "facts", facts)
 	return nil
+}
+
+// RefreshFacts loads the company snapshot for one stock. A failed call returns
+// before writing, so the stored row stays put. Futures and crypto are skipped.
+// The annual filing is the fourth call: a 10-Q income statement is year-to-date,
+// and the fourth quarter is that year minus the prior year-to-date.
+func (s *Syncer) RefreshFacts(ctx context.Context, id int64) error {
+	sym, err := s.Store.Symbol(ctx, id)
+	if err != nil {
+		return err
+	}
+	if sym.AssetClass != market.Stock || s.Finnhub == nil || !s.Finnhub.Enabled() {
+		return nil
+	}
+	marketCap, pe, err := s.Finnhub.Metric(ctx, sym.ProviderSymbol)
+	if err != nil {
+		return err
+	}
+	date, hour, err := s.Finnhub.NextEarnings(ctx, sym.ProviderSymbol, s.now())
+	if err != nil {
+		return err
+	}
+	revenue, earnings, err := s.Finnhub.ReportedTTM(ctx, sym.ProviderSymbol, s.now())
+	if err != nil {
+		return err
+	}
+	return s.Store.UpsertFacts(ctx, id, marketCap, pe, revenue, earnings, date, hour, s.now().Unix())
+}
+
+// refreshStaleFact refreshes one stock whose snapshot is missing or older than 20 hours.
+func (s *Syncer) refreshStaleFact(ctx context.Context, symbols []store.TickSymbol) (int, error) {
+	if s.Finnhub == nil || !s.Finnhub.Enabled() {
+		return 0, nil
+	}
+	ids := make([]int64, 0, len(symbols))
+	for _, sym := range symbols {
+		if sym.AssetClass == market.Stock {
+			ids = append(ids, sym.ID)
+		}
+	}
+	id, ok, err := s.Store.StaleFact(ctx, ids, s.now().Add(-20*time.Hour).Unix())
+	if err != nil || !ok {
+		return 0, err
+	}
+	if err := s.RefreshFacts(ctx, id); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }
 
 // RefreshRanges rewrites a cached band when the prior close it is centered on

@@ -174,7 +174,10 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureRanges(); err != nil {
 		return err
 	}
-	return s.ensureOwned()
+	if err := s.ensureOwned(); err != nil {
+		return err
+	}
+	return s.ensureFacts()
 }
 
 // ensureRanges stores the expected band for the last completed session.
@@ -187,6 +190,22 @@ CREATE TABLE IF NOT EXISTS ranges (
   low REAL NOT NULL,
   high REAL NOT NULL,
   computed_at INTEGER NOT NULL
+)`)
+	return err
+}
+
+// ensureFacts stores the slow company snapshot shown on an expanded stock card.
+func (s *Store) ensureFacts() error {
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS facts (
+  symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+  market_cap REAL,
+  pe_ttm REAL,
+  revenue_ttm REAL,
+  earnings_ttm REAL,
+  earnings_date TEXT,
+  earnings_hour TEXT,
+  fetched_at INTEGER NOT NULL
 )`)
 	return err
 }
@@ -387,24 +406,30 @@ const (
 )
 
 type Row struct {
-	ID         int64     `json:"id"`
-	Display    string    `json:"display"`
-	Name       string    `json:"name"`
-	AssetClass string    `json:"asset_class"`
-	Price      *float64  `json:"price"`
-	ChangeD    *float64  `json:"change_d"`
-	ChangeW    *float64  `json:"change_w"`
-	ChangeM    *float64  `json:"change_m"`
-	ChangeH1   *float64  `json:"change_1h"`
-	ChangeH4   *float64  `json:"change_4h"`
-	Sparkline  []float64 `json:"sparkline,omitempty"`
-	ExtSession string    `json:"ext_session,omitempty"`
-	ExtPct     *float64  `json:"ext_pct,omitempty"`
-	AsOf       *int64    `json:"as_of"`
-	Position   int       `json:"position"`
-	RangeLow   *float64  `json:"range_low,omitempty"`
-	RangeHigh  *float64  `json:"range_high,omitempty"`
-	Owned      bool      `json:"owned,omitempty"`
+	ID           int64     `json:"id"`
+	Display      string    `json:"display"`
+	Name         string    `json:"name"`
+	AssetClass   string    `json:"asset_class"`
+	Price        *float64  `json:"price"`
+	ChangeD      *float64  `json:"change_d"`
+	ChangeW      *float64  `json:"change_w"`
+	ChangeM      *float64  `json:"change_m"`
+	ChangeH1     *float64  `json:"change_1h"`
+	ChangeH4     *float64  `json:"change_4h"`
+	Sparkline    []float64 `json:"sparkline,omitempty"`
+	ExtSession   string    `json:"ext_session,omitempty"`
+	ExtPct       *float64  `json:"ext_pct,omitempty"`
+	AsOf         *int64    `json:"as_of"`
+	Position     int       `json:"position"`
+	RangeLow     *float64  `json:"range_low,omitempty"`
+	RangeHigh    *float64  `json:"range_high,omitempty"`
+	Owned        bool      `json:"owned,omitempty"`
+	MarketCap    *float64  `json:"market_cap,omitempty"`
+	PeTTM        *float64  `json:"pe_ttm,omitempty"`
+	RevenueTTM   *float64  `json:"revenue_ttm,omitempty"`
+	EarningsTTM  *float64  `json:"earnings_ttm,omitempty"`
+	EarningsDate string    `json:"earnings_date,omitempty"`
+	EarningsHour string    `json:"earnings_hour,omitempty"`
 }
 
 type Group struct {
@@ -429,12 +454,14 @@ func (s *Store) Board(ctx context.Context) (Board, error) {
 SELECT g.id, g.name, g.color, g.icon, g.position,
        s.id, s.display, s.name, s.asset_class,
        q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
-       q.ext_session, q.ext_pct, gs.position, r.low, r.high
+       q.ext_session, q.ext_pct, gs.position, r.low, r.high,
+       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour
 FROM groups g
 LEFT JOIN group_symbols gs ON gs.group_id = g.id
 LEFT JOIN symbols s ON s.id = gs.symbol_id
 LEFT JOIN quotes q ON q.symbol_id = s.id
 LEFT JOIN ranges r ON r.symbol_id = s.id
+LEFT JOIN facts f ON f.symbol_id = s.id
 ORDER BY g.position, g.id, gs.position, s.id`)
 	if err != nil {
 		return Board{}, err
@@ -456,8 +483,10 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			extPct               sql.NullFloat64
 			spos                 sql.NullInt64
 			rlow, rhigh          sql.NullFloat64
+			cap, pe, rev, earn   sql.NullFloat64
+			earnDate, earnHour   sql.NullString
 		)
-		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &spos, &rlow, &rhigh); err != nil {
+		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &spos, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour); err != nil {
 			return Board{}, err
 		}
 		i, ok := index[gid]
@@ -473,7 +502,7 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 		if spos.Valid {
 			pos = int(spos.Int64)
 		}
-		board.Groups[i].Rows = append(board.Groups[i].Rows, Row{
+		row := Row{
 			ID:         sid.Int64,
 			Display:    display.String,
 			Name:       name.String,
@@ -491,7 +520,9 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			Position:   pos,
 			RangeLow:   floatPtr(rlow),
 			RangeHigh:  floatPtr(rhigh),
-		})
+		}
+		setFacts(&row, cap, pe, rev, earn, earnDate, earnHour)
+		board.Groups[i].Rows = append(board.Groups[i].Rows, row)
 	}
 	if err := rows.Err(); err != nil {
 		return Board{}, err
@@ -584,10 +615,12 @@ func (s *Store) alertOnlyRows(ctx context.Context) ([]Row, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT s.id, s.display, s.name, s.asset_class,
        q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
-       q.ext_session, q.ext_pct, r.low, r.high
+       q.ext_session, q.ext_pct, r.low, r.high,
+       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour
 FROM symbols s
 LEFT JOIN quotes q ON q.symbol_id = s.id
 LEFT JOIN ranges r ON r.symbol_id = s.id
+LEFT JOIN facts f ON f.symbol_id = s.id
 WHERE EXISTS (SELECT 1 FROM alerts a WHERE a.symbol_id = s.id AND a.status = 'armed')
   AND NOT EXISTS (SELECT 1 FROM group_symbols gs WHERE gs.symbol_id = s.id)
 ORDER BY s.id`)
@@ -605,8 +638,10 @@ ORDER BY s.id`)
 			asOf                sql.NullInt64
 			extSess             sql.NullString
 			extPct              sql.NullFloat64
+			cap, pe, rev, earn  sql.NullFloat64
+			earnDate, earnHour  sql.NullString
 		)
-		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh); err != nil {
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour); err != nil {
 			return nil, err
 		}
 		row.Price = floatPtr(price)
@@ -621,6 +656,7 @@ ORDER BY s.id`)
 		row.ExtPct = floatPtr(extPct)
 		row.RangeLow = floatPtr(rlow)
 		row.RangeHigh = floatPtr(rhigh)
+		setFacts(&row, cap, pe, rev, earn, earnDate, earnHour)
 		out = append(out, row)
 	}
 	return out, rows.Err()
@@ -630,11 +666,13 @@ func (s *Store) ownedRows(ctx context.Context) ([]Row, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT s.id, s.display, s.name, s.asset_class,
        q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
-       q.ext_session, q.ext_pct, r.low, r.high
+       q.ext_session, q.ext_pct, r.low, r.high,
+       f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour
 FROM owned o
 JOIN symbols s ON s.id = o.symbol_id
 LEFT JOIN quotes q ON q.symbol_id = s.id
 LEFT JOIN ranges r ON r.symbol_id = s.id
+LEFT JOIN facts f ON f.symbol_id = s.id
 ORDER BY o.position, s.id`)
 	if err != nil {
 		return nil, err
@@ -650,8 +688,10 @@ ORDER BY o.position, s.id`)
 			asOf                sql.NullInt64
 			extSess             sql.NullString
 			extPct              sql.NullFloat64
+			cap, pe, rev, earn  sql.NullFloat64
+			earnDate, earnHour  sql.NullString
 		)
-		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh); err != nil {
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour); err != nil {
 			return nil, err
 		}
 		row.Price = floatPtr(price)
@@ -666,6 +706,7 @@ ORDER BY o.position, s.id`)
 		row.ExtPct = floatPtr(extPct)
 		row.RangeLow = floatPtr(rlow)
 		row.RangeHigh = floatPtr(rhigh)
+		setFacts(&row, cap, pe, rev, earn, earnDate, earnHour)
 		row.Owned = true
 		out = append(out, row)
 	}
@@ -800,6 +841,22 @@ func floatPtr(n sql.NullFloat64) *float64 {
 	}
 	v := n.Float64
 	return &v
+}
+
+func setFacts(row *Row, cap, pe, rev, earn sql.NullFloat64, date, hour sql.NullString) {
+	row.MarketCap = floatPtr(cap)
+	row.PeTTM = floatPtr(pe)
+	row.RevenueTTM = floatPtr(rev)
+	row.EarningsTTM = floatPtr(earn)
+	row.EarningsDate = date.String
+	row.EarningsHour = hour.String
+}
+
+func floatArg(n *float64) any {
+	if n == nil {
+		return nil
+	}
+	return *n
 }
 
 func intPtr(n sql.NullInt64) *int64 {
@@ -1222,6 +1279,55 @@ func (s *Store) Quote(ctx context.Context, symbolID int64) (QuoteRow, error) {
 	q.ExtSession = extSess.String
 	q.ExtPct = floatPtr(extPct)
 	return q, nil
+}
+
+// UpsertFacts replaces the company snapshot. A failed fetch must not call this,
+// so the previous row stays on the card.
+func (s *Store) UpsertFacts(ctx context.Context, symbolID int64, marketCap, pe, revenue, earnings *float64, earningsDate, earningsHour string, fetchedAt int64) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO facts(symbol_id, market_cap, pe_ttm, revenue_ttm, earnings_ttm, earnings_date, earnings_hour, fetched_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(symbol_id) DO UPDATE SET
+  market_cap = excluded.market_cap,
+  pe_ttm = excluded.pe_ttm,
+  revenue_ttm = excluded.revenue_ttm,
+  earnings_ttm = excluded.earnings_ttm,
+  earnings_date = excluded.earnings_date,
+  earnings_hour = excluded.earnings_hour,
+  fetched_at = excluded.fetched_at`,
+		symbolID, floatArg(marketCap), floatArg(pe), floatArg(revenue), floatArg(earnings), earningsDate, earningsHour, fetchedAt)
+	return err
+}
+
+// StaleFact is the stock in ids whose snapshot is missing or older than olderThan.
+// Missing rows come first, then the oldest fetch, then the lowest id.
+func (s *Store) StaleFact(ctx context.Context, ids []int64, olderThan int64) (int64, bool, error) {
+	if len(ids) == 0 {
+		return 0, false, nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	placeholders := make([]string, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, olderThan)
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT s.id
+FROM symbols s
+LEFT JOIN facts f ON f.symbol_id = s.id
+WHERE s.asset_class = 'stock' AND s.id IN (`+strings.Join(placeholders, ",")+`)
+  AND (f.symbol_id IS NULL OR f.fetched_at < ?)
+ORDER BY CASE WHEN f.fetched_at IS NULL THEN 0 ELSE 1 END, f.fetched_at, s.id
+LIMIT 1`, args...).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
 }
 
 // UpsertQuote writes a quote. hourly false keeps change_1h, change_4h, and the sparkline already stored.

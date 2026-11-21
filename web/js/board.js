@@ -1,4 +1,4 @@
-import { formatClock, formatPct, formatPrice, pctClass, priceTone } from './format.js';
+import { formatClock, formatCompact, formatDay, formatPE, formatPct, formatPrice, pctClass, priceTone } from './format.js';
 
 const HOLD_MS = 400;
 const HOLD_SLOP = 10;
@@ -241,7 +241,7 @@ class SwBoard extends HTMLElement {
           <span class="more-cell"><span class="chg-h">4H</span>${chg(row.change_4h)}</span>
           <span class="more-cell"><span class="chg-h">W</span>${chg(row.change_w)}</span>
           <span class="more-cell"><span class="chg-h">M</span>${chg(row.change_m)}</span>
-        </div></div>` : '';
+        </div>${factsLine(row)}</div>` : '';
     const moves = this.editing && !fixed ? `<span class="row-edit">
           <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
           <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="1" ${i === rows.length - 1 ? 'disabled' : ''}>Down</button>
@@ -697,6 +697,30 @@ function sparkHit(row, editing) {
   const inner = sparkline(row.sparkline, row.change_d);
   if (editing) return `<span class="spark-hit">${inner}</span>`;
   return `<button type="button" class="spark-hit" data-open="${row.id}" aria-label="Chart for ${escapeAttr(row.display)}">${inner}</button>`;
+}
+
+function factsLine(row) {
+  if (row.asset_class !== 'stock') return '';
+  const cells = [];
+  const next = formatDay(row.earnings_date);
+  if (next) {
+    const when = row.earnings_hour === 'bmo' ? ' · open' : row.earnings_hour === 'amc' ? ' · close' : '';
+    cells.push(fact('Next', next + when));
+  }
+  const cap = formatCompact(row.market_cap);
+  if (cap) cells.push(fact('Cap', cap));
+  const pe = formatPE(row.pe_ttm);
+  if (pe) cells.push(fact('P/E', pe));
+  const rev = formatCompact(row.revenue_ttm);
+  if (rev) cells.push(fact('Rev', rev));
+  const earn = formatCompact(row.earnings_ttm);
+  if (earn) cells.push(fact('Earn', earn));
+  if (!cells.length) return '';
+  return `<div class="facts">${cells.join('')}</div>`;
+}
+
+function fact(label, value) {
+  return `<span class="fact"><span class="chg-h">${escapeHTML(label)}</span><span class="num">${escapeHTML(value)}</span></span>`;
 }
 
 function rangeMeter(row) {

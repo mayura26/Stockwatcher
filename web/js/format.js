@@ -24,6 +24,39 @@ export function priceTone(n) {
   return tone === 'flat' ? '' : tone;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export function formatCompact(n) {
+  if (n == null || Number.isNaN(Number(n))) return '';
+  const v = Number(n);
+  const sign = v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  const units = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M']];
+  for (const [scale, suffix] of units) {
+    if (abs >= scale) {
+      const scaled = abs / scale;
+      let body = scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(1);
+      if (body.endsWith('.0')) body = body.slice(0, -2);
+      return sign + body + suffix;
+    }
+  }
+  return sign + formatPrice(abs);
+}
+
+export function formatPE(n) {
+  if (n == null || !(Number(n) > 0)) return '';
+  return Number(n).toFixed(1);
+}
+
+export function formatDay(iso) {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return '';
+  let text = d + ' ' + MONTHS[m - 1];
+  if (y !== new Date().getFullYear()) text += ' ' + String(y).slice(2);
+  return text;
+}
+
 export function formatClock(unix) {
   if (!unix) return '';
   const d = new Date(unix * 1000);

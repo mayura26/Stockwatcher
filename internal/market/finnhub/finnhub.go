@@ -17,7 +17,10 @@ import (
 // ErrNoKey is returned when stock search or quotes are requested without a key.
 var ErrNoKey = errors.New("FINNHUB_API_KEY is not set")
 
-// Client calls Finnhub for US stock quotes and symbol search.
+// ErrRateLimit is a 429. Callers stop the pass and leave stored data in place.
+var ErrRateLimit = errors.New("finnhub rate limit")
+
+// Client calls Finnhub for US stock quotes, search, and the slow company snapshot.
 // Daily candles are probed once; on the free plan that route is paid and stays off.
 type Client struct {
 	Key  string
@@ -109,7 +112,7 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 		return nil, err
 	}
 	if status == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("finnhub rate limit")
+		return nil, ErrRateLimit
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("finnhub status %d", status)

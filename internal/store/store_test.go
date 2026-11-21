@@ -613,3 +613,142 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 		t.Fatal(err)
 	}
 }
+
+func TestFactsMigrationAndBoard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE symbols (
+  id INTEGER PRIMARY KEY,
+  asset_class TEXT NOT NULL,
+  display TEXT NOT NULL,
+  provider_symbol TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  bars_synced_at INTEGER
+);
+CREATE TABLE groups (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL
+);
+CREATE TABLE group_symbols (
+  group_id INTEGER NOT NULL,
+  symbol_id INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (group_id, symbol_id)
+);
+CREATE TABLE quotes (
+  symbol_id INTEGER PRIMARY KEY,
+  price REAL NOT NULL,
+  prev_close REAL,
+  change_d REAL,
+  change_w REAL,
+  change_m REAL,
+  as_of INTEGER NOT NULL
+);
+INSERT INTO symbols(id, asset_class, display, provider_symbol, name) VALUES (1, 'stock', 'AAPL', 'AAPL', 'Apple');
+INSERT INTO groups(id, name, position) VALUES (1, 'Watch', 0);
+INSERT INTO group_symbols(group_id, symbol_id, position) VALUES (1, 1, 0);
+INSERT INTO quotes(symbol_id, price, as_of) VALUES (1, 190, 1);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	cap, pe, rev, earn := 3.4e12, 32.4, 391e9, 96.2e9
+	if err := st.UpsertFacts(ctx, 1, &cap, &pe, &rev, &earn, "2026-01-29", "amc", 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetOwned(ctx, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	board, err := st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := groupNamed(t, board, "Watch").Rows[0]
+	owned := groupNamed(t, board, "Owned").Rows[0]
+	for _, row := range []Row{watch, owned} {
+		if row.MarketCap == nil || *row.MarketCap != cap || row.PeTTM == nil || *row.PeTTM != pe || row.RevenueTTM == nil || *row.RevenueTTM != rev || row.EarningsTTM == nil || *row.EarningsTTM != earn || row.EarningsDate != "2026-01-29" || row.EarningsHour != "amc" {
+			t.Fatalf("%+v", row)
+		}
+	}
+
+	gid := groupNamed(t, board, "Watch").ID
+	msft, _, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Stock, Display: "MSFT", ProviderSymbol: "MSFT", Name: "Microsoft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, _, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Future, Display: "ES", ProviderSymbol: "ES=F", Name: "E-mini"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, ok, err := st.StaleFact(ctx, []int64{1, msft.ID, es.ID}, 50)
+	if err != nil || !ok || id != msft.ID {
+		t.Fatalf("missing facts id %d ok %v err %v", id, ok, err)
+	}
+	old := int64(10)
+	if err := st.UpsertFacts(ctx, msft.ID, nil, nil, nil, nil, "", "", old); err != nil {
+		t.Fatal(err)
+	}
+	id, ok, err = st.StaleFact(ctx, []int64{1, msft.ID, es.ID}, 50)
+	if err != nil || !ok || id != msft.ID {
+		t.Fatalf("older facts id %d ok %v err %v", id, ok, err)
+	}
+	if err := st.UpsertFacts(ctx, msft.ID, nil, nil, nil, nil, "", "", 80); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err = st.StaleFact(ctx, []int64{1, msft.ID, es.ID}, 50); err != nil || ok {
+		t.Fatal(err, ok)
+	}
+
+	lone, _, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Stock, Display: "NVDA", ProviderSymbol: "NVDA", Name: "Nvidia"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RemoveFromGroup(ctx, gid, lone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateAlert(ctx, lone.ID, "above", "once", 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertQuote(ctx, lone.ID, 100, nil, nil, nil, nil, nil, nil, nil, 1, false, "", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertRange(ctx, lone.ID, "2024-01-02", 1, 2, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertFacts(ctx, lone.ID, &cap, nil, nil, nil, "2026-02-20", "bmo", 90); err != nil {
+		t.Fatal(err)
+	}
+	board, err = st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, row := range groupNamed(t, board, "Notable").Rows {
+		if row.Display != "NVDA" {
+			continue
+		}
+		found = row.MarketCap != nil && *row.MarketCap == cap && row.PeTTM == nil && row.EarningsDate == "2026-02-20" && row.EarningsHour == "bmo"
+	}
+	if !found {
+		t.Fatalf("notable %+v", groupNamed(t, board, "Notable").Rows)
+	}
+}

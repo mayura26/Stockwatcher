@@ -274,6 +274,21 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
   justify-content: flex-end;
   gap: 0.7rem;
 }
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+}
+.fact {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 3.2rem;
+}
+.fact .chg-h,
+.fact .num { text-align: left; }
+.fact .chg-h { font-size: 0.62rem; color: var(--muted); }
+.fact .num { font-size: 0.75rem; }
 .range-scale {
   display: flex;
   justify-content: space-between;
