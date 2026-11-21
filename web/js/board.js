@@ -1,5 +1,9 @@
 import { formatClock, formatPct, formatPrice, pctClass, priceTone } from './format.js';
 
+const HOLD_MS = 400;
+const HOLD_SLOP = 10;
+const SCROLL_EDGE = 72;
+
 const COLORS = [
   { value: '#c6a15b', label: 'Brass' },
   { value: '#8eae8a', label: 'Sage' },
@@ -51,8 +55,22 @@ class SwBoard extends HTMLElement {
         <button type="button" class="add-row" data-act="search" aria-label="Add a symbol">+</button>
       </div>
       ${groupSheet()}`;
+    this.ateClick = false;
+    this.onPointerMove = (event) => this.trackDrag(event);
+    this.onPointerUp = (event) => this.finishDrag(true, event);
+    this.onPointerCancel = (event) => this.finishDrag(false, event);
+    this.onContextMenu = (event) => {
+      if (this.drag) event.preventDefault();
+    };
+    this.blockTouch = (event) => {
+      if (this.drag?.active) event.preventDefault();
+    };
+    this.addEventListener('pointerdown', () => {
+      if (!this.drag?.active) this.ateClick = false;
+    });
     this.addEventListener('click', (event) => this.onClick(event));
     this.addEventListener('submit', (event) => this.onSubmit(event));
+    this.querySelector('.rows').addEventListener('pointerdown', (event) => this.armDrag(event));
     this.onKey = (event) => {
       if (event.key === 'Escape' && this.sheetOpen) this.closeGroupSheet();
     };
@@ -61,9 +79,12 @@ class SwBoard extends HTMLElement {
 
   disconnectedCallback() {
     window.removeEventListener('keydown', this.onKey);
+    this.finishDrag(false);
   }
 
   setState({ board, groupId, flashes, editing, armed }) {
+    if (this.drag?.active) return;
+    if (this.drag) this.finishDrag(false);
     const y = window.scrollY;
     this.board = board;
     this.groupId = groupId;
@@ -159,7 +180,7 @@ class SwBoard extends HTMLElement {
             <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="1" ${i === rows.length - 1 ? 'disabled' : ''}>Down</button>
           </span>` : '';
       const remove = fixed ? '' : `<button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>`;
-      return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}${fixed ? ' is-auto' : ''}">${name}${sparkHit(row, this.editing)}${price}${remove}${more}${moves}</div>`;
+      return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}${fixed ? ' is-auto' : ''}" data-symbol="${row.id}">${name}${sparkHit(row, this.editing)}${price}${remove}${more}${moves}</div>`;
     }).join('');
   }
 
@@ -196,7 +217,193 @@ class SwBoard extends HTMLElement {
     }
   }
 
+  armDrag(event) {
+    if (this.drag || this.group?.synthetic) return;
+    if (event.button > 0) return;
+    const host = this.querySelector('.rows');
+    const row = event.target.closest('.row');
+    if (!row || !host?.contains(row)) return;
+    if (event.target.closest('.row-x, .row-edit')) return;
+    this.ateClick = false;
+    this.drag = {
+      pointerId: event.pointerId,
+      row,
+      x: event.clientX,
+      y: event.clientY,
+      active: false,
+      timer: setTimeout(() => this.beginDrag(), HOLD_MS),
+    };
+    window.addEventListener('pointermove', this.onPointerMove);
+    window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('pointercancel', this.onPointerCancel);
+    document.addEventListener('contextmenu', this.onContextMenu, true);
+  }
+
+  trackDrag(event) {
+    const drag = this.drag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.active) {
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      if (dx * dx + dy * dy > HOLD_SLOP * HOLD_SLOP) this.finishDrag(false, event);
+      return;
+    }
+    if (event.cancelable) event.preventDefault();
+    this.placeDrag(event.clientY);
+  }
+
+  beginDrag() {
+    const drag = this.drag;
+    if (!drag || drag.active) return;
+    const row = drag.row;
+    const host = this.querySelector('.rows');
+    if (!row.isConnected || !host) {
+      this.finishDrag(false);
+      return;
+    }
+    const rows = [...host.querySelectorAll(':scope > .row')];
+    if (!rows.includes(row) || rows.length < 2) {
+      this.finishDrag(false);
+      return;
+    }
+    const symbolId = Number(row.dataset.symbol);
+    this.openChanges.delete(symbolId);
+    row.classList.remove('is-open');
+    row.querySelector('.more')?.remove();
+    for (const button of row.querySelectorAll('[aria-expanded="true"]')) {
+      button.setAttribute('aria-expanded', 'false');
+    }
+    drag.active = true;
+    this.ateClick = true;
+    drag.rows = rows;
+    drag.from = rows.indexOf(row);
+    drag.target = drag.from;
+    drag.heights = rows.map((item) => item.getBoundingClientRect().height);
+    drag.viewportTops = rows.map((item) => item.getBoundingClientRect().top);
+    drag.scrollY = window.scrollY;
+    const rect = row.getBoundingClientRect();
+    drag.grab = Math.min(Math.max(drag.y - rect.top, 0), rect.height);
+    drag.pointerY = drag.y;
+    host.classList.add('is-sorting');
+    row.classList.add('is-lifted');
+    document.body.classList.add('sw-dragging');
+    try { row.setPointerCapture(drag.pointerId); } catch { /* pointer already released */ }
+    document.addEventListener('touchmove', this.blockTouch, { passive: false });
+    navigator.vibrate?.(10);
+    this.emit({ type: 'drag-lock', on: true });
+    this.placeDrag(drag.y);
+    this.watchScroll();
+  }
+
+  placeDrag(clientY) {
+    const drag = this.drag;
+    if (!drag?.active) return;
+    drag.pointerY = clientY;
+    const scrollDelta = window.scrollY - drag.scrollY;
+    const count = drag.rows.length;
+    drag.target = dropIndex(drag, clientY, scrollDelta);
+    const order = movedOrder(drag.from, drag.target, count);
+    const pos = new Array(count);
+    let y = drag.viewportTops[0] - scrollDelta;
+    for (const index of order) {
+      pos[index] = y;
+      y += drag.heights[index];
+    }
+    for (let index = 0; index < count; index++) {
+      const item = drag.rows[index];
+      const layoutTop = drag.viewportTops[index] - scrollDelta;
+      if (index === drag.from) {
+        item.style.transform = `translateY(${Math.round(clientY - drag.grab - layoutTop)}px)`;
+      } else {
+        const shift = Math.round(pos[index] - layoutTop);
+        item.style.transform = shift ? `translateY(${shift}px)` : '';
+      }
+    }
+  }
+
+  watchScroll() {
+    const step = () => {
+      const drag = this.drag;
+      if (!drag?.active) return;
+      const y = drag.pointerY;
+      const edge = SCROLL_EDGE;
+      const max = 16;
+      let delta = 0;
+      if (y < edge) delta = -Math.ceil((1 - y / edge) * max);
+      else if (y > window.innerHeight - edge) delta = Math.ceil((1 - (window.innerHeight - y) / edge) * max);
+      if (delta) {
+        window.scrollBy(0, delta);
+        this.placeDrag(y);
+      }
+      drag.raf = requestAnimationFrame(step);
+    };
+    this.drag.raf = requestAnimationFrame(step);
+  }
+
+  finishDrag(commit, event) {
+    const drag = this.drag;
+    if (!drag) return;
+    if (event && event.pointerId !== drag.pointerId) return;
+    clearTimeout(drag.timer);
+    if (drag.raf) cancelAnimationFrame(drag.raf);
+    window.removeEventListener('pointermove', this.onPointerMove);
+    window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('pointercancel', this.onPointerCancel);
+    document.removeEventListener('touchmove', this.blockTouch);
+    document.removeEventListener('contextmenu', this.onContextMenu, true);
+    document.body.classList.remove('sw-dragging');
+    let changed = false;
+    let ids = null;
+    if (drag.active) {
+      try { drag.row.releasePointerCapture(drag.pointerId); } catch { /* pointer already released */ }
+      const settled = this.settleRows(commit);
+      changed = settled.changed;
+      ids = settled.ids;
+      this.emit({ type: 'drag-lock', on: false });
+      this.ateClick = true;
+      clearTimeout(this.clickTimer);
+      this.clickTimer = setTimeout(() => { this.ateClick = false; }, 500);
+    }
+    this.drag = null;
+    if (changed && ids) this.emit({ type: 'reorder-symbols', ids });
+  }
+
+  settleRows(commit) {
+    const drag = this.drag;
+    const host = this.querySelector('.rows');
+    host?.classList.remove('is-sorting');
+    const rows = drag.rows || [];
+    const changed = !!(commit && drag.target != null && drag.target !== drag.from);
+    const order = changed ? movedOrder(drag.from, drag.target, rows.length) : rows.map((_, index) => index);
+    const ids = [];
+    for (const index of order) {
+      const row = rows[index];
+      if (!row) continue;
+      row.style.transform = '';
+      row.classList.remove('is-lifted');
+      if (host && row.isConnected) host.appendChild(row);
+      const id = Number(row.dataset.symbol);
+      if (Number.isFinite(id)) ids.push(id);
+    }
+    if (this.editing && host) {
+      const ordered = [...host.querySelectorAll(':scope > .row')];
+      ordered.forEach((row, index) => {
+        const up = row.querySelector('[data-dir="-1"]');
+        const down = row.querySelector('[data-dir="1"]');
+        if (up) up.disabled = index === 0;
+        if (down) down.disabled = index === ordered.length - 1;
+      });
+    }
+    return { ids, changed: changed && ids.length === rows.length };
+  }
+
   onClick(event) {
+    if (this.ateClick) {
+      this.ateClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.target === this.querySelector('.group-mask')) {
       this.closeGroupSheet();
       return;
@@ -395,6 +602,29 @@ function sparkline(values, change) {
     return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
   }).join(' ');
   return `<span class="spark ${pctClass(change)}" aria-hidden="true"><svg viewBox="0 0 ${w} ${h}"><path d="${d}"></path></svg></span>`;
+}
+
+function movedOrder(from, target, count) {
+  const order = [];
+  for (let index = 0; index < count; index++) if (index !== from) order.push(index);
+  order.splice(target, 0, from);
+  return order;
+}
+
+function dropIndex(drag, clientY, scrollDelta) {
+  const topOf = (index) => drag.viewportTops[index] - scrollDelta;
+  const center = clientY - drag.grab + drag.heights[drag.from] / 2;
+  let target = drag.from;
+  if (center >= topOf(drag.from) + drag.heights[drag.from] / 2) {
+    for (let index = drag.from + 1; index < drag.heights.length; index++) {
+      if (center > topOf(index) + drag.heights[index] / 2) target = index;
+    }
+  } else {
+    for (let index = drag.from - 1; index >= 0; index--) {
+      if (center < topOf(index) + drag.heights[index] / 2) target = index;
+    }
+  }
+  return target;
 }
 
 function escapeHTML(s) {

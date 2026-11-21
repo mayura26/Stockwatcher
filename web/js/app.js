@@ -36,12 +36,13 @@ class SwApp extends HTMLElement {
     this.flashes = new Map();
     this.searchOpen = false;
     this.editing = false;
+    this.dragging = false;
     this.error = '';
     this.shell = false;
     this.poll = 0;
     window.addEventListener('hashchange', () => this.showRoute());
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && !this.editing && !this.searchOpen) this.refreshData().catch(() => {});
+      if (!document.hidden && !this.editing && !this.searchOpen && !this.dragging) this.refreshData().catch(() => {});
       this.syncPoll();
     });
     window.addEventListener('sw-unauthorized', () => this.lock());
@@ -148,6 +149,7 @@ class SwApp extends HTMLElement {
 
   async refreshData() {
     const board = await this.api.get('/api/board');
+    if (this.dragging) return;
     this.flashes = this.diff(board);
     this.board = board;
     const route = parseRoute();
@@ -166,6 +168,7 @@ class SwApp extends HTMLElement {
   }
 
   paintBoard() {
+    if (this.dragging) return;
     this.querySelector('sw-board').setState({
       board: this.board,
       groupId: this.groupId(),
@@ -208,7 +211,7 @@ class SwApp extends HTMLElement {
   syncPoll() {
     clearInterval(this.poll);
     this.poll = 0;
-    if (!this.token || document.hidden || this.editing || this.searchOpen) return;
+    if (!this.token || document.hidden || this.editing || this.searchOpen || this.dragging) return;
     this.poll = setInterval(() => this.refreshData().catch((err) => this.fail(err)), 20000);
   }
 
@@ -304,6 +307,28 @@ class SwApp extends HTMLElement {
         await this.api.del('/api/groups/' + this.groupId() + '/symbols/' + detail.symbolId);
         await this.refreshData();
         return;
+      case 'drag-lock':
+        this.dragging = !!detail.on;
+        this.syncPoll();
+        return;
+      case 'reorder-symbols': {
+        const group = (this.board?.groups || []).find((g) => g.id === this.groupId());
+        const rows = group?.rows || [];
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        const next = (detail.ids || []).map((id) => byId.get(id));
+        if (!group || next.some((row) => !row) || next.length !== rows.length) return;
+        const previous = rows.slice();
+        group.rows = next;
+        try {
+          await this.api.put('/api/groups/' + this.groupId() + '/symbols/order', { ids: detail.ids });
+        } catch (err) {
+          group.rows = previous;
+          await this.refreshData();
+          throw err;
+        }
+        await this.refreshData();
+        return;
+      }
       case 'move-symbol': {
         const group = (this.board?.groups || []).find((g) => g.id === this.groupId());
         const ids = (group?.rows || []).map((row) => row.id);

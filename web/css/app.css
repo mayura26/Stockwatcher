@@ -308,6 +308,27 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
   gap: 0.35rem;
   padding: 0 0 0.55rem;
 }
+body.sw-dragging,
+.rows.is-sorting,
+.rows.is-sorting .row {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+body.sw-dragging { cursor: grabbing; }
+.rows.is-sorting .row {
+  transition: transform 160ms ease;
+}
+.row.is-lifted,
+.rows.is-sorting .row.is-lifted {
+  position: relative;
+  z-index: 3;
+  background: var(--raise);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  transition: none;
+  touch-action: none;
+  cursor: grabbing;
+}
 
 .edit-bar {
   display: flex;
