@@ -256,8 +256,13 @@ class SwApp extends HTMLElement {
         this.syncPoll();
         return;
       case 'create-group': {
-        const group = await this.api.post('/api/groups', { name: detail.name });
+        const group = await this.api.post('/api/groups', {
+          name: detail.name,
+          color: detail.color,
+          icon: detail.icon,
+        });
         localStorage.setItem(GROUP_KEY, String(group.id));
+        this.querySelector('sw-board').closeGroupSheet();
         await this.refreshData();
         return;
       }
@@ -266,7 +271,12 @@ class SwApp extends HTMLElement {
         this.paintBoard();
         return;
       case 'rename-group':
-        await this.api.patch('/api/groups/' + this.groupId(), { name: detail.name });
+        await this.api.patch('/api/groups/' + this.groupId(), {
+          name: detail.name,
+          color: detail.color,
+          icon: detail.icon,
+        });
+        this.querySelector('sw-board').closeGroupSheet();
         await this.refreshData();
         return;
       case 'delete-group':

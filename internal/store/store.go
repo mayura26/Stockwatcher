@@ -92,7 +92,9 @@ CREATE TABLE IF NOT EXISTS symbols (
 CREATE TABLE IF NOT EXISTS groups (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
-  position INTEGER NOT NULL
+  position INTEGER NOT NULL,
+  color TEXT NOT NULL DEFAULT '#c6a15b',
+  icon TEXT NOT NULL DEFAULT 'mark'
 );
 CREATE TABLE IF NOT EXISTS group_symbols (
   group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -147,7 +149,10 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err != nil {
 		return err
 	}
-	return s.ensureAlertRepeat()
+	if err := s.ensureAlertRepeat(); err != nil {
+		return err
+	}
+	return s.ensureGroupAppearance()
 }
 
 // ensureAlertRepeat adds the repeat column on databases created before one-off
@@ -180,6 +185,45 @@ func (s *Store) ensureAlertRepeat() error {
 	return err
 }
 
+// ensureGroupAppearance adds color and icon on databases created when a group
+// was only a name. Existing rows become brass with the mark icon.
+func (s *Store) ensureGroupAppearance() error {
+	rows, err := s.db.Query(`PRAGMA table_info(groups)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasColor, hasIcon := false, false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		switch name {
+		case "color":
+			hasColor = true
+		case "icon":
+			hasIcon = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasColor {
+		if _, err := s.db.Exec(`ALTER TABLE groups ADD COLUMN color TEXT NOT NULL DEFAULT '#c6a15b'`); err != nil {
+			return err
+		}
+	}
+	if !hasIcon {
+		if _, err := s.db.Exec(`ALTER TABLE groups ADD COLUMN icon TEXT NOT NULL DEFAULT 'mark'`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) ensureGroup() error {
 	_, err := s.db.Exec(`INSERT INTO groups(name, position) SELECT 'Watch', 0 WHERE NOT EXISTS (SELECT 1 FROM groups)`)
 	return err
@@ -201,6 +245,8 @@ type Row struct {
 type Group struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
+	Color    string `json:"color"`
+	Icon     string `json:"icon"`
 	Position int    `json:"position"`
 	Rows     []Row  `json:"rows"`
 }
@@ -213,7 +259,7 @@ type Board struct {
 
 func (s *Store) Board(ctx context.Context) (Board, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT g.id, g.name, g.position,
+SELECT g.id, g.name, g.color, g.icon, g.position,
        s.id, s.display, s.name, s.asset_class,
        q.price, q.change_d, q.change_w, q.change_m, q.as_of,
        gs.position
@@ -230,22 +276,22 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 	index := map[int64]int{}
 	for rows.Next() {
 		var (
-			gid, gpos          int64
-			gname              string
-			sid                sql.NullInt64
-			display, name, cls sql.NullString
-			price, cd, cw, cm  sql.NullFloat64
-			asOf               sql.NullInt64
-			spos               sql.NullInt64
+			gid, gpos            int64
+			gname, gcolor, gicon string
+			sid                  sql.NullInt64
+			display, name, cls   sql.NullString
+			price, cd, cw, cm    sql.NullFloat64
+			asOf                 sql.NullInt64
+			spos                 sql.NullInt64
 		)
-		if err := rows.Scan(&gid, &gname, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &asOf, &spos); err != nil {
+		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &asOf, &spos); err != nil {
 			return Board{}, err
 		}
 		i, ok := index[gid]
 		if !ok {
 			i = len(board.Groups)
 			index[gid] = i
-			board.Groups = append(board.Groups, Group{ID: gid, Name: gname, Position: int(gpos), Rows: []Row{}})
+			board.Groups = append(board.Groups, Group{ID: gid, Name: gname, Color: gcolor, Icon: gicon, Position: int(gpos), Rows: []Row{}})
 		}
 		if !sid.Valid {
 			continue
@@ -369,12 +415,12 @@ func upsertSymbol(ctx context.Context, tx *sql.Tx, in NewSymbol) (Symbol, bool, 
 	return Symbol{ID: id, AssetClass: in.AssetClass, Display: in.Display, ProviderSymbol: in.ProviderSymbol, Name: in.Name}, true, nil
 }
 
-func (s *Store) CreateGroup(ctx context.Context, name string) (Group, error) {
+func (s *Store) CreateGroup(ctx context.Context, name, color, icon string) (Group, error) {
 	var pos int
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), -1) + 1 FROM groups`).Scan(&pos); err != nil {
 		return Group{}, err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO groups(name, position) VALUES (?, ?)`, name, pos)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO groups(name, position, color, icon) VALUES (?, ?, ?, ?)`, name, pos, color, icon)
 	if err != nil {
 		return Group{}, err
 	}
@@ -382,11 +428,11 @@ func (s *Store) CreateGroup(ctx context.Context, name string) (Group, error) {
 	if err != nil {
 		return Group{}, err
 	}
-	return Group{ID: id, Name: name, Position: pos, Rows: []Row{}}, nil
+	return Group{ID: id, Name: name, Color: color, Icon: icon, Position: pos, Rows: []Row{}}, nil
 }
 
-func (s *Store) RenameGroup(ctx context.Context, id int64, name string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE groups SET name = ? WHERE id = ?`, name, id)
+func (s *Store) RenameGroup(ctx context.Context, id int64, name, color, icon string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE groups SET name = ?, color = ?, icon = ? WHERE id = ?`, name, color, icon, id)
 	if err != nil {
 		return err
 	}

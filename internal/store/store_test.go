@@ -22,7 +22,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(board.Groups) != 1 || board.Groups[0].Name != "Watch" {
+	if len(board.Groups) != 1 || board.Groups[0].Name != "Watch" || board.Groups[0].Color != "#c6a15b" || board.Groups[0].Icon != "mark" {
 		t.Fatalf("%+v", board.Groups)
 	}
 	gid := board.Groups[0].ID
@@ -61,6 +61,67 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	}
 	if err := st.DeleteGroup(ctx, gid); err != ErrLastGroup {
 		t.Fatal(err)
+	}
+	made, err := st.CreateGroup(ctx, "Metals", "#c56b52", "coin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made.Color != "#c56b52" || made.Icon != "coin" {
+		t.Fatalf("%+v", made)
+	}
+	if err := st.RenameGroup(ctx, made.ID, "Copper", "#a35d6a", "bolt"); err != nil {
+		t.Fatal(err)
+	}
+	board, err = st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copper Group
+	for _, g := range board.Groups {
+		if g.ID == made.ID {
+			copper = g
+		}
+	}
+	if copper.Name != "Copper" || copper.Color != "#a35d6a" || copper.Icon != "bolt" {
+		t.Fatalf("%+v", copper)
+	}
+}
+
+func TestGroupAppearanceMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE groups (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL
+);
+INSERT INTO groups(name, position) VALUES ('Legacy', 0);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	board, err := st.Board(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(board.Groups) != 1 || board.Groups[0].Name != "Legacy" || board.Groups[0].Color != "#c6a15b" || board.Groups[0].Icon != "mark" {
+		t.Fatalf("%+v", board.Groups)
 	}
 }
 

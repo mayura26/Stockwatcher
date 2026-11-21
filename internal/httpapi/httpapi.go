@@ -98,7 +98,9 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Color string `json:"color"`
+		Icon  string `json:"icon"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -108,7 +110,12 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	g, err := s.Store.CreateGroup(r.Context(), name)
+	color, icon, err := cleanAppearance(body.Color, body.Icon)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	g, err := s.Store.CreateGroup(r.Context(), name, color, icon)
 	if mapErr(w, err) {
 		return
 	}
@@ -121,7 +128,9 @@ func (s *Server) renameGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Color string `json:"color"`
+		Icon  string `json:"icon"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -131,7 +140,12 @@ func (s *Server) renameGroup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if mapErr(w, s.Store.RenameGroup(r.Context(), id, name)) {
+	color, icon, err := cleanAppearance(body.Color, body.Icon)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mapErr(w, s.Store.RenameGroup(r.Context(), id, name, color, icon)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -464,6 +478,28 @@ func cleanName(name string) (string, error) {
 		return "", errors.New("name must be 1-40 characters")
 	}
 	return name, nil
+}
+
+func cleanAppearance(color, icon string) (string, string, error) {
+	color = strings.ToLower(strings.TrimSpace(color))
+	icon = strings.ToLower(strings.TrimSpace(icon))
+	if color == "" {
+		color = "#c6a15b"
+	}
+	if icon == "" {
+		icon = "mark"
+	}
+	switch color {
+	case "#c6a15b", "#8eae8a", "#c56b52", "#e8e0cc", "#8aa0ae", "#a35d6a":
+	default:
+		return "", "", errors.New("unknown color")
+	}
+	switch icon {
+	case "mark", "eye", "chart", "coin", "bolt", "layers":
+	default:
+		return "", "", errors.New("unknown icon")
+	}
+	return color, icon, nil
 }
 
 func cleanSymbol(class, display, provider, name string) (store.NewSymbol, error) {

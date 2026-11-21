@@ -1,14 +1,34 @@
 import { formatClock, formatPct, formatPrice, pctClass } from './format.js';
 
+const COLORS = [
+  { value: '#c6a15b', label: 'Brass' },
+  { value: '#8eae8a', label: 'Sage' },
+  { value: '#c56b52', label: 'Clay' },
+  { value: '#e8e0cc', label: 'Sand' },
+  { value: '#8aa0ae', label: 'Slate' },
+  { value: '#a35d6a', label: 'Wine' },
+];
+
+const ICONS = [
+  { id: 'mark', label: 'Mark', svg: svg('<circle cx="8" cy="8" r="2.2" fill="currentColor" stroke="none"></circle>') },
+  { id: 'eye', label: 'Eye', svg: svg('<path d="M1.5 8S4 4.2 8 4.2 14.5 8 14.5 8 12 11.8 8 11.8 1.5 8 1.5 8Z"></path><circle cx="8" cy="8" r="1.5"></circle>') },
+  { id: 'chart', label: 'Chart', svg: svg('<path d="M2 13h12"></path><path d="M3.5 10.5 6.2 7.4l2.3 1.7 3.9-4.8"></path>') },
+  { id: 'coin', label: 'Coin', svg: svg('<circle cx="8" cy="8" r="5"></circle><path d="M8 4.8v6.4"></path>') },
+  { id: 'bolt', label: 'Bolt', svg: svg('<path d="M9.2 1.8 4.2 8.6h3.1L6.4 14.2 12 7.2H8.8L9.2 1.8Z"></path>') },
+  { id: 'layers', label: 'Layers', svg: svg('<path d="M8 2.4 2.4 5.8 8 9.2l5.6-3.4L8 2.4Z"></path><path d="M2.4 8.6 8 12l5.6-3.4"></path>') },
+];
+
 class SwBoard extends HTMLElement {
   connectedCallback() {
+    this.sheetMode = 'create';
+    this.draft = { color: COLORS[0].value, icon: 'mark' };
+    this.sheetOpen = false;
     this.innerHTML = `
       <header class="top">
         <div class="brand">Stockwatcher</div>
         <div class="top-actions">
           <button type="button" class="text-btn" data-act="edit">Edit</button>
           <button type="button" class="text-btn" data-act="alerts">Alerts</button>
-          <button type="button" class="text-btn" data-act="search">Add</button>
         </div>
       </header>
       <div class="groups" role="tablist"></div>
@@ -16,9 +36,19 @@ class SwBoard extends HTMLElement {
         <div class="edit-slot"></div>
         <div class="cols"></div>
         <div class="rows"></div>
-      </div>`;
+        <button type="button" class="add-row" data-act="search" aria-label="Add a symbol">+</button>
+      </div>
+      ${groupSheet()}`;
     this.addEventListener('click', (event) => this.onClick(event));
     this.addEventListener('submit', (event) => this.onSubmit(event));
+    this.onKey = (event) => {
+      if (event.key === 'Escape' && this.sheetOpen) this.closeGroupSheet();
+    };
+    window.addEventListener('keydown', this.onKey);
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener('keydown', this.onKey);
   }
 
   setState({ board, groupId, flashes, editing, armed }) {
@@ -43,12 +73,12 @@ class SwBoard extends HTMLElement {
   renderGroups(board) {
     const host = this.querySelector('.groups');
     const groups = board?.groups || [];
-    const chips = groups.map((g) => `
-      <button type="button" class="chip${g.id === this.group?.id ? ' is-on' : ''}" role="tab" data-group="${g.id}" aria-selected="${g.id === this.group?.id}">${escapeHTML(g.name)}</button>
-    `).join('');
-    const add = this.adding
-      ? `<form data-new-group><input name="group" aria-label="New group name" maxlength="40" placeholder="Group" enterkeyhint="done"><button type="submit" class="chip">Add</button></form>`
-      : '<button type="button" class="chip chip-add" data-act="new-group" aria-label="New group">+</button>';
+    const chips = groups.map((g) => {
+      const on = g.id === this.group?.id;
+      const color = chipColor(g.color);
+      return `<button type="button" class="chip${on ? ' is-on' : ''}" role="tab" data-group="${g.id}" aria-selected="${on}" style="--chip:${color}"><span class="chip-icon">${iconSVG(g.icon)}</span><span class="chip-name">${escapeHTML(g.name)}</span></button>`;
+    }).join('');
+    const add = '<button type="button" class="chip chip-add" data-act="new-group" aria-label="New group">+</button>';
     host.innerHTML = chips + add;
   }
 
@@ -60,11 +90,8 @@ class SwBoard extends HTMLElement {
     }
     slot.innerHTML = `
       <div class="edit-bar">
-        <form data-rename>
-          <input name="name" value="${escapeAttr(group.name)}" aria-label="Group name" maxlength="40">
-          <button type="submit" class="text-btn">Rename</button>
-        </form>
         <div class="edit-moves">
+          <button type="button" class="mini" data-act="edit-group">Edit group</button>
           <button type="button" class="mini" data-move-group="-1">Left</button>
           <button type="button" class="mini" data-move-group="1">Right</button>
           <button type="button" class="mini danger" data-delete-group>Delete group</button>
@@ -88,12 +115,12 @@ class SwBoard extends HTMLElement {
     const host = this.querySelector('.rows');
     const rows = group?.rows || [];
     if (!rows.length) {
-      host.innerHTML = '<p class="empty">Nothing in this group. <button type="button" data-act="search">Add a symbol</button></p>';
+      host.innerHTML = '<p class="empty">Nothing in this group.</p>';
       return;
     }
     host.innerHTML = rows.map((row, i) => {
       const flash = this.flashes.get(row.id);
-      const body = `
+      const main = `
           <span class="ident">
             <span class="sym">${escapeHTML(row.display)}</span>
             <span class="sub">${escapeHTML(row.name || '')}</span>
@@ -101,18 +128,68 @@ class SwBoard extends HTMLElement {
           <span class="px num">${formatPrice(row.price)}</span>
           ${chg(row.change_d)}
           ${chg(row.change_w)}
-          ${chg(row.change_m)}
-          ${this.editing ? `<span class="row-edit">
+          ${chg(row.change_m)}`;
+      const open = this.editing
+        ? `<div class="row-main">${main}</div>`
+        : `<button type="button" class="row-main" data-open="${row.id}">${main}</button>`;
+      const moves = this.editing ? `<span class="row-edit">
             <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
             <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="1" ${i === rows.length - 1 ? 'disabled' : ''}>Down</button>
-            <button type="button" class="mini danger" data-remove="${row.id}">Remove</button>
-          </span>` : ''}`;
-      if (this.editing) return `<div class="row${flash ? ' flash-' + flash : ''}">${body}</div>`;
-      return `<button type="button" class="row${flash ? ' flash-' + flash : ''}" data-open="${row.id}">${body}</button>`;
+          </span>` : '';
+      return `<div class="row${flash ? ' flash-' + flash : ''}">${open}<button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>${moves}</div>`;
     }).join('');
   }
 
+  openGroupSheet(mode) {
+    this.sheetMode = mode;
+    const group = this.group;
+    const editing = mode === 'edit' && group;
+    this.draft = {
+      color: chipColor(editing ? group.color : COLORS[0].value),
+      icon: iconId(editing ? group.icon : 'mark'),
+    };
+    this.querySelector('#group-sheet-title').textContent = editing ? 'Edit group' : 'New group';
+    this.querySelector('[data-sheet-submit]').textContent = editing ? 'Save' : 'Create';
+    const input = this.querySelector('[name="name"]');
+    input.value = editing ? group.name : '';
+    this.syncPicks();
+    this.sheetOpen = true;
+    this.querySelector('.group-mask').hidden = false;
+    input.focus();
+  }
+
+  closeGroupSheet() {
+    this.sheetOpen = false;
+    const mask = this.querySelector('.group-mask');
+    if (mask) mask.hidden = true;
+  }
+
+  syncPicks() {
+    for (const btn of this.querySelectorAll('[data-color]')) {
+      btn.setAttribute('aria-pressed', btn.dataset.color === this.draft.color ? 'true' : 'false');
+    }
+    for (const btn of this.querySelectorAll('[data-icon]')) {
+      btn.setAttribute('aria-pressed', btn.dataset.icon === this.draft.icon ? 'true' : 'false');
+    }
+  }
+
   onClick(event) {
+    if (event.target === this.querySelector('.group-mask')) {
+      this.closeGroupSheet();
+      return;
+    }
+    const color = event.target.closest('[data-color]');
+    if (color) {
+      this.draft.color = color.dataset.color;
+      this.syncPicks();
+      return;
+    }
+    const icon = event.target.closest('[data-icon]');
+    if (icon) {
+      this.draft.icon = icon.dataset.icon;
+      this.syncPicks();
+      return;
+    }
     const open = event.target.closest('[data-open]');
     if (open && !this.editing) {
       this.emit({ type: 'open', id: Number(open.dataset.open) });
@@ -126,9 +203,15 @@ class SwBoard extends HTMLElement {
     const act = event.target.closest('[data-act]');
     if (act) {
       if (act.dataset.act === 'new-group') {
-        this.adding = true;
-        this.renderGroups(this.board);
-        this.querySelector('[name="group"]')?.focus();
+        this.openGroupSheet('create');
+        return;
+      }
+      if (act.dataset.act === 'edit-group') {
+        this.openGroupSheet('edit');
+        return;
+      }
+      if (act.dataset.act === 'close-group') {
+        this.closeGroupSheet();
         return;
       }
       this.emit({ type: act.dataset.act });
@@ -150,23 +233,66 @@ class SwBoard extends HTMLElement {
   }
 
   onSubmit(event) {
-    const form = event.target.closest('[data-rename]');
+    const form = event.target.closest('[data-group-form]');
+    if (!form) return;
     event.preventDefault();
-    if (form) {
-      this.emit({ type: 'rename-group', name: new FormData(form).get('name') });
-      return;
-    }
-    const created = event.target.closest('[data-new-group]');
-    if (!created) return;
-    const name = new FormData(created).get('group');
-    this.adding = false;
-    if (name && String(name).trim()) this.emit({ type: 'create-group', name: String(name).trim() });
-    else this.renderGroups(this.board);
+    const name = String(new FormData(form).get('name') || '').trim();
+    if (!name) return;
+    this.emit({
+      type: this.sheetMode === 'edit' ? 'rename-group' : 'create-group',
+      name,
+      color: this.draft.color,
+      icon: this.draft.icon,
+    });
   }
 
   emit(detail) {
     this.dispatchEvent(new CustomEvent('sw-action', { bubbles: true, detail }));
   }
+}
+
+function groupSheet() {
+  const swatches = COLORS.map((c) => `<button type="button" class="swatch" data-color="${c.value}" style="background:${c.value}" aria-label="${c.label}" aria-pressed="false"></button>`).join('');
+  const icons = ICONS.map((ic) => `<button type="button" class="icon-btn" data-icon="${ic.id}" aria-label="${ic.label}" aria-pressed="false">${ic.svg}</button>`).join('');
+  return `
+    <div class="group-mask" hidden>
+      <div class="search-sheet" role="dialog" aria-labelledby="group-sheet-title">
+        <div class="search-head">
+          <div class="sheet-title" id="group-sheet-title">New group</div>
+          <button type="button" class="text-btn" data-act="close-group">Close</button>
+        </div>
+        <form data-group-form class="group-form">
+          <label class="field">Name
+            <input name="name" maxlength="40" placeholder="Group" autocomplete="off" enterkeyhint="done" required>
+          </label>
+          <div>
+            <div class="pick-label" id="group-colors">Color</div>
+            <div class="swatches" role="group" aria-labelledby="group-colors">${swatches}</div>
+          </div>
+          <div>
+            <div class="pick-label" id="group-icons">Icon</div>
+            <div class="icon-row" role="group" aria-labelledby="group-icons">${icons}</div>
+          </div>
+          <button type="submit" class="btn" data-sheet-submit>Create</button>
+        </form>
+      </div>
+    </div>`;
+}
+
+function svg(body) {
+  return `<svg viewBox="0 0 16 16" aria-hidden="true">${body}</svg>`;
+}
+
+function iconId(id) {
+  return ICONS.some((ic) => ic.id === id) ? id : 'mark';
+}
+
+function iconSVG(id) {
+  return ICONS.find((ic) => ic.id === iconId(id)).svg;
+}
+
+function chipColor(value) {
+  return COLORS.some((c) => c.value === String(value || '').toLowerCase()) ? String(value).toLowerCase() : COLORS[0].value;
 }
 
 function chg(n) {
