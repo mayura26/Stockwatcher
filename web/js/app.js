@@ -124,9 +124,13 @@ class SwApp extends HTMLElement {
   groupId() {
     const groups = this.board?.groups || [];
     if (!groups.length) return 0;
-    const saved = Number(localStorage.getItem(GROUP_KEY) || 0);
-    if (groups.some((g) => g.id === saved)) return saved;
-    return groups[0].id;
+    const raw = localStorage.getItem(GROUP_KEY);
+    if (raw != null && raw !== '') {
+      const saved = Number(raw);
+      if (groups.some((g) => g.id === saved)) return saved;
+    }
+    const real = groups.find((g) => !g.synthetic);
+    return (real || groups[0]).id;
   }
 
   diff(board) {
@@ -285,7 +289,7 @@ class SwApp extends HTMLElement {
         await this.refreshData();
         return;
       case 'move-group': {
-        const ids = (this.board?.groups || []).map((g) => g.id);
+        const ids = (this.board?.groups || []).filter((g) => !g.synthetic).map((g) => g.id);
         const index = ids.indexOf(this.groupId());
         const next = index + detail.dir;
         if (index < 0 || next < 0 || next >= ids.length) return;

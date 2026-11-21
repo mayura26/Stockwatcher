@@ -225,7 +225,11 @@ func (s *Syncer) fetchAndStore(ctx context.Context, id int64, full bool) error {
 	if len(bars) == 0 {
 		return fmt.Errorf("no bars for %s", sym.Display)
 	}
-	return s.Store.UpsertBars(ctx, id, bars)
+	if err := s.Store.UpsertBars(ctx, id, bars); err != nil {
+		return err
+	}
+	_, err = s.RefreshRanges(ctx)
+	return err
 }
 
 func (s *Syncer) fetchBars(ctx context.Context, class, provider string, full bool) ([]market.Bar, error) {
@@ -310,8 +314,45 @@ func (s *Syncer) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails)
+	ranges, err := s.RefreshRanges(ctx)
+	if err != nil {
+		return err
+	}
+	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails, "ranges", ranges)
 	return nil
+}
+
+// RefreshRanges rewrites a cached band for every watched symbol whose latest
+// completed session is newer than basis_day. A current band is left untouched.
+// History is read only for the symbols that moved forward a session. The count
+// is how many bands were written.
+func (s *Syncer) RefreshRanges(ctx context.Context) (int, error) {
+	statuses, err := s.Store.RangeStatuses(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := s.now()
+	n := 0
+	for _, st := range statuses {
+		basis := market.CompletedDay(st.AssetClass, st.LastDay, st.PrevDay, now)
+		if basis == "" || basis == st.BasisDay {
+			continue
+		}
+		bars, err := s.Store.Bars(ctx, st.SymbolID)
+		if err != nil {
+			return n, err
+		}
+		done := market.CompletedBars(st.AssetClass, bars, now)
+		low, high, ok := market.ExpectedBand(done)
+		if !ok || len(done) == 0 || done[len(done)-1].Day != basis {
+			continue
+		}
+		if err := s.Store.UpsertRange(ctx, st.SymbolID, basis, low, high, now.Unix()); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) (map[int64]market.Quote, map[int64]bool, error) {

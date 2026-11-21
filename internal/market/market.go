@@ -331,6 +331,88 @@ func todayFor(class string, now time.Time) string {
 	return now.In(newYork()).Format("2006-01-02")
 }
 
+// sessionForming reports whether the bar for today's session is still incomplete.
+// Stocks stay open until 16:00 ET, futures until 17:00 ET. Crypto's UTC date
+// rolls at midnight, so the current UTC day is always incomplete. A weekend
+// stock or futures session is already complete.
+func sessionForming(class string, now time.Time) bool {
+	if class == Crypto {
+		return true
+	}
+	t := now.In(newYork())
+	if t.Weekday() == time.Saturday || t.Weekday() == time.Sunday {
+		return false
+	}
+	mins := t.Hour()*60 + t.Minute()
+	if class == Future {
+		return mins < 17*60
+	}
+	return mins < 16*60
+}
+
+// CompletedBars drops the in-progress session. bars must be ordered by day.
+// A closed session, including a weekend looking back at Friday, is kept whole.
+func CompletedBars(class string, bars []Bar, now time.Time) []Bar {
+	if len(bars) == 0 || !sessionForming(class, now) {
+		return bars
+	}
+	today := todayFor(class, now)
+	i := len(bars)
+	for i > 0 && bars[i-1].Day >= today {
+		i--
+	}
+	return bars[:i]
+}
+
+// CompletedDay is the latest finished session given only the two newest bar
+// dates. prevDay is the session before lastDay. An empty string means there
+// is no completed session yet.
+func CompletedDay(class, lastDay, prevDay string, now time.Time) string {
+	if lastDay == "" {
+		return ""
+	}
+	if sessionForming(class, now) && lastDay >= todayFor(class, now) {
+		return prevDay
+	}
+	return lastDay
+}
+
+// ExpectedBand is the last close ± one sample standard deviation of the last
+// 20 close-to-close simple returns. The band is centered on that close, with
+// no drift term. ok is false with fewer than 21 closes or a zero deviation,
+// which would make every print look unusual.
+func ExpectedBand(bars []Bar) (low, high float64, ok bool) {
+	if len(bars) < 21 {
+		return 0, 0, false
+	}
+	window := bars[len(bars)-21:]
+	rets := make([]float64, 20)
+	for i := 1; i < len(window); i++ {
+		prev := window[i-1].Close
+		cur := window[i].Close
+		if prev <= 0 || cur <= 0 {
+			return 0, 0, false
+		}
+		rets[i-1] = cur/prev - 1
+	}
+	var mean float64
+	for _, r := range rets {
+		mean += r
+	}
+	mean /= float64(len(rets))
+	var ss float64
+	for _, r := range rets {
+		d := r - mean
+		ss += d * d
+	}
+	sigma := math.Sqrt(ss / float64(len(rets)-1))
+	if sigma == 0 || math.IsNaN(sigma) || math.IsInf(sigma, 0) {
+		return 0, 0, false
+	}
+	last := window[len(window)-1].Close
+	return last * (1 - sigma), last * (1 + sigma), true
+}
+
 var (
 	nyOnce sync.Once
 	nyLoc  *time.Location

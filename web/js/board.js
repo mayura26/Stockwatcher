@@ -79,6 +79,7 @@ class SwBoard extends HTMLElement {
     alerts.innerHTML = armed ? 'Alerts<span class="dot" aria-label="armed alerts"></span>' : 'Alerts';
     this.querySelector('[data-act="edit"]').classList.toggle('is-on', editing);
     this.querySelector('[data-act="edit"]').setAttribute('aria-pressed', editing ? 'true' : 'false');
+    this.querySelector('.add-row').hidden = !!group?.synthetic;
     window.scrollTo(0, y);
   }
 
@@ -96,7 +97,7 @@ class SwBoard extends HTMLElement {
 
   renderEdit(group) {
     const slot = this.querySelector('.edit-slot');
-    if (!this.editing || !group) {
+    if (!this.editing || !group || group.synthetic) {
       slot.innerHTML = '';
       return;
     }
@@ -127,33 +128,38 @@ class SwBoard extends HTMLElement {
     const host = this.querySelector('.rows');
     const rows = group?.rows || [];
     if (!rows.length) {
-      host.innerHTML = '<p class="empty">Nothing in this group.</p>';
+      host.innerHTML = group?.synthetic
+        ? '<p class="empty">No unusual moves.</p>'
+        : '<p class="empty">Nothing in this group.</p>';
       return;
     }
+    const fixed = !!group?.synthetic;
     host.innerHTML = rows.map((row, i) => {
       const flash = this.flashes.get(row.id);
       const open = this.openChanges.has(row.id);
-      const main = `
-          <span class="ident">
-            <span class="sym">${escapeHTML(row.display)}</span>
-            <span class="sub">${escapeHTML(row.name || '')}</span>
-          </span>
-          ${sparkline(row.sparkline, row.change_d)}
-          <span class="px num ${priceTone(row.change_d)}">${formatPrice(row.price)}</span>`;
-      const body = this.editing
-        ? `<div class="row-main">${main}</div>`
-        : `<button type="button" class="row-main" data-open="${row.id}">${main}</button>`;
-      const more = open ? `<div class="more">
+      const expanded = open ? 'true' : 'false';
+      const name = `<button type="button" class="card-name" data-expand="${row.id}" aria-expanded="${expanded}">
+            <span class="ident">
+              <span class="sym">${escapeHTML(row.display)}</span>
+              <span class="sub">${escapeHTML(row.name || '')}</span>
+            </span>
+          </button>`;
+      const price = `<button type="button" class="card-px" data-expand="${row.id}" aria-expanded="${expanded}">
+            <span class="px num ${priceTone(row.change_d)}">${formatPrice(row.price)}</span>
+            <span class="day"><span class="chg-h">D</span>${chg(row.change_d)}</span>
+          </button>`;
+      const more = open ? `<div class="more">${rangeMeter(row)}<div class="more-chgs">
             <span class="more-cell"><span class="chg-h">1H</span>${chg(row.change_1h)}</span>
             <span class="more-cell"><span class="chg-h">4H</span>${chg(row.change_4h)}</span>
             <span class="more-cell"><span class="chg-h">W</span>${chg(row.change_w)}</span>
             <span class="more-cell"><span class="chg-h">M</span>${chg(row.change_m)}</span>
-          </div>` : '';
-      const moves = this.editing ? `<span class="row-edit">
+          </div></div>` : '';
+      const moves = this.editing && !fixed ? `<span class="row-edit">
             <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
             <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="1" ${i === rows.length - 1 ? 'disabled' : ''}>Down</button>
           </span>` : '';
-      return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}">${body}<button type="button" class="day" data-expand="${row.id}" aria-expanded="${open}"><span class="chg-h">D</span>${chg(row.change_d)}</button><button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>${more}${moves}</div>`;
+      const remove = fixed ? '' : `<button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>`;
+      return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}${fixed ? ' is-auto' : ''}">${name}${sparkHit(row, this.editing)}${price}${remove}${more}${moves}</div>`;
     }).join('');
   }
 
@@ -207,19 +213,6 @@ class SwBoard extends HTMLElement {
       this.syncPicks();
       return;
     }
-    const expand = event.target.closest('[data-expand]');
-    if (expand) {
-      const id = Number(expand.dataset.expand);
-      if (this.openChanges.has(id)) this.openChanges.delete(id);
-      else this.openChanges.add(id);
-      this.renderRows(this.group);
-      return;
-    }
-    const open = event.target.closest('[data-open]');
-    if (open && !this.editing) {
-      this.emit({ type: 'open', id: Number(open.dataset.open) });
-      return;
-    }
     const group = event.target.closest('[data-group]');
     if (group) {
       this.emit({ type: 'group', id: Number(group.dataset.group) });
@@ -253,8 +246,26 @@ class SwBoard extends HTMLElement {
       return;
     }
     const gmove = event.target.closest('[data-move-group]');
-    if (gmove) this.emit({ type: 'move-group', dir: Number(gmove.dataset.moveGroup) });
-    if (event.target.closest('[data-delete-group]')) this.emit({ type: 'delete-group' });
+    if (gmove) {
+      this.emit({ type: 'move-group', dir: Number(gmove.dataset.moveGroup) });
+      return;
+    }
+    if (event.target.closest('[data-delete-group]')) {
+      this.emit({ type: 'delete-group' });
+      return;
+    }
+    const open = event.target.closest('[data-open]');
+    if (open && !this.editing) {
+      this.emit({ type: 'open', id: Number(open.dataset.open) });
+      return;
+    }
+    const expand = event.target.closest('[data-expand]');
+    if (expand) {
+      const id = Number(expand.dataset.expand);
+      if (this.openChanges.has(id)) this.openChanges.delete(id);
+      else this.openChanges.add(id);
+      this.renderRows(this.group);
+    }
   }
 
   onSubmit(event) {
@@ -322,6 +333,40 @@ function chipColor(value) {
 
 function chg(n) {
   return `<span class="chg ${pctClass(n)}">${formatPct(n)}</span>`;
+}
+
+function sparkHit(row, editing) {
+  const inner = sparkline(row.sparkline, row.change_d);
+  if (editing) return `<span class="spark-hit">${inner}</span>`;
+  return `<button type="button" class="spark-hit" data-open="${row.id}" aria-label="Chart for ${escapeAttr(row.display)}">${inner}</button>`;
+}
+
+function rangeMeter(row) {
+  const low = row.range_low;
+  const high = row.range_high;
+  if (low == null || high == null || !(high > low)) return '';
+  const width = high - low;
+  const clamp = (v) => Math.max(0, Math.min(100, ((v - low) / width) * 100));
+  let travel = '';
+  const spark = row.sparkline || [];
+  if (spark.length) {
+    let smin = spark[0];
+    let smax = spark[0];
+    for (const v of spark) {
+      if (v < smin) smin = v;
+      if (v > smax) smax = v;
+    }
+    const a = clamp(smin);
+    const b = clamp(smax);
+    travel = `<span class="range-span" style="left:${a}%;width:${Math.max(b - a, 0.8)}%"></span>`;
+  }
+  let mark = '';
+  if (row.price != null && !Number.isNaN(Number(row.price))) {
+    const price = Number(row.price);
+    const tone = price > high ? 'up' : price < low ? 'down' : '';
+    mark = `<span class="range-mark ${tone}" style="left:${clamp(price)}%"></span>`;
+  }
+  return `<div class="range"><div class="range-scale num"><span>${formatPrice(low)}</span><span>${formatPrice(high)}</span></div><div class="range-track">${travel}${mark}</div></div>`;
 }
 
 function sparkline(values, change) {

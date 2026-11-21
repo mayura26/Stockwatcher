@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -162,7 +163,24 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureQuoteHourly(); err != nil {
 		return err
 	}
-	return s.ensureQuoteSparkline()
+	if err := s.ensureQuoteSparkline(); err != nil {
+		return err
+	}
+	return s.ensureRanges()
+}
+
+// ensureRanges stores the expected band for the last completed session.
+// The board reads it; the tick rewrites it once that session changes.
+func (s *Store) ensureRanges() error {
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS ranges (
+  symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+  basis_day TEXT NOT NULL,
+  low REAL NOT NULL,
+  high REAL NOT NULL,
+  computed_at INTEGER NOT NULL
+)`)
+	return err
 }
 
 // ensureAlertRepeat adds the repeat column on databases created before one-off
@@ -320,15 +338,18 @@ type Row struct {
 	Sparkline  []float64 `json:"sparkline,omitempty"`
 	AsOf       *int64    `json:"as_of"`
 	Position   int       `json:"position"`
+	RangeLow   *float64  `json:"range_low,omitempty"`
+	RangeHigh  *float64  `json:"range_high,omitempty"`
 }
 
 type Group struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Color    string `json:"color"`
-	Icon     string `json:"icon"`
-	Position int    `json:"position"`
-	Rows     []Row  `json:"rows"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	Color     string `json:"color"`
+	Icon      string `json:"icon"`
+	Position  int    `json:"position"`
+	Synthetic bool   `json:"synthetic,omitempty"`
+	Rows      []Row  `json:"rows"`
 }
 
 type Board struct {
@@ -342,11 +363,12 @@ func (s *Store) Board(ctx context.Context) (Board, error) {
 SELECT g.id, g.name, g.color, g.icon, g.position,
        s.id, s.display, s.name, s.asset_class,
        q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
-       gs.position
+       gs.position, r.low, r.high
 FROM groups g
 LEFT JOIN group_symbols gs ON gs.group_id = g.id
 LEFT JOIN symbols s ON s.id = gs.symbol_id
 LEFT JOIN quotes q ON q.symbol_id = s.id
+LEFT JOIN ranges r ON r.symbol_id = s.id
 ORDER BY g.position, g.id, gs.position, s.id`)
 	if err != nil {
 		return Board{}, err
@@ -365,8 +387,9 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			spark                sql.NullString
 			asOf                 sql.NullInt64
 			spos                 sql.NullInt64
+			rlow, rhigh          sql.NullFloat64
 		)
-		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &spos); err != nil {
+		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &spos, &rlow, &rhigh); err != nil {
 			return Board{}, err
 		}
 		i, ok := index[gid]
@@ -396,6 +419,8 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			Sparkline:  decodeSpark(spark),
 			AsOf:       intPtr(asOf),
 			Position:   pos,
+			RangeLow:   floatPtr(rlow),
+			RangeHigh:  floatPtr(rhigh),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -404,7 +429,151 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM alerts WHERE status = 'armed'`).Scan(&board.ArmedAlerts); err != nil {
 		return Board{}, err
 	}
+	notable, err := s.notableGroup(ctx, board.Groups)
+	if err != nil {
+		return Board{}, err
+	}
+	board.Groups = append([]Group{notable}, board.Groups...)
 	return board, nil
+}
+
+// notableGroup is the pinned list of watched names that have traded outside
+// the cached band. It is not a stored group. Watched names are the same set
+// the tick refreshes: anything on a board, plus an armed alert with no group.
+func (s *Store) notableGroup(ctx context.Context, groups []Group) (Group, error) {
+	seen := map[int64]struct{}{}
+	var candidates []Row
+	for _, g := range groups {
+		for _, row := range g.Rows {
+			if _, ok := seen[row.ID]; ok {
+				continue
+			}
+			seen[row.ID] = struct{}{}
+			candidates = append(candidates, row)
+		}
+	}
+	extra, err := s.alertOnlyRows(ctx)
+	if err != nil {
+		return Group{}, err
+	}
+	for _, row := range extra {
+		if _, ok := seen[row.ID]; ok {
+			continue
+		}
+		candidates = append(candidates, row)
+	}
+	var rows []Row
+	for _, row := range candidates {
+		if !outsideBand(row) {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		return excursion(rows[i]) > excursion(rows[j])
+	})
+	if rows == nil {
+		rows = []Row{}
+	}
+	for i := range rows {
+		rows[i].Position = i
+	}
+	return Group{
+		ID:        0,
+		Name:      "Notable",
+		Color:     "#c56b52",
+		Icon:      "pulse",
+		Synthetic: true,
+		Rows:      rows,
+	}, nil
+}
+
+func (s *Store) alertOnlyRows(ctx context.Context) ([]Row, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, s.display, s.name, s.asset_class,
+       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
+       r.low, r.high
+FROM symbols s
+LEFT JOIN quotes q ON q.symbol_id = s.id
+LEFT JOIN ranges r ON r.symbol_id = s.id
+WHERE EXISTS (SELECT 1 FROM alerts a WHERE a.symbol_id = s.id AND a.status = 'armed')
+  AND NOT EXISTS (SELECT 1 FROM group_symbols gs WHERE gs.symbol_id = s.id)
+ORDER BY s.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Row
+	for rows.Next() {
+		var (
+			row                 Row
+			price, cd, cw, cm   sql.NullFloat64
+			h1, h4, rlow, rhigh sql.NullFloat64
+			spark               sql.NullString
+			asOf                sql.NullInt64
+		)
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &rlow, &rhigh); err != nil {
+			return nil, err
+		}
+		row.Price = floatPtr(price)
+		row.ChangeD = floatPtr(cd)
+		row.ChangeW = floatPtr(cw)
+		row.ChangeM = floatPtr(cm)
+		row.ChangeH1 = floatPtr(h1)
+		row.ChangeH4 = floatPtr(h4)
+		row.Sparkline = decodeSpark(spark)
+		row.AsOf = intPtr(asOf)
+		row.RangeLow = floatPtr(rlow)
+		row.RangeHigh = floatPtr(rhigh)
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func outsideBand(row Row) bool {
+	if row.RangeLow == nil || row.RangeHigh == nil {
+		return false
+	}
+	low, high := *row.RangeLow, *row.RangeHigh
+	if !(high > low) {
+		return false
+	}
+	if row.Price != nil && (*row.Price < low || *row.Price > high) {
+		return true
+	}
+	for _, p := range row.Sparkline {
+		if p < low || p > high {
+			return true
+		}
+	}
+	return false
+}
+
+func excursion(row Row) float64 {
+	low, high := *row.RangeLow, *row.RangeHigh
+	width := high - low
+	if width <= 0 {
+		return 0
+	}
+	best := 0.0
+	consider := func(p float64) {
+		var d float64
+		if p > high {
+			d = (p - high) / width
+		} else if p < low {
+			d = (low - p) / width
+		}
+		if d > best {
+			best = d
+		}
+	}
+	if row.Price != nil {
+		consider(*row.Price)
+	}
+	for _, p := range row.Sparkline {
+		consider(p)
+	}
+	return best
 }
 
 func decodeSpark(n sql.NullString) []float64 {
@@ -704,6 +873,76 @@ ON CONFLICT(symbol_id, day) DO UPDATE SET
 		return err
 	}
 	return tx.Commit()
+}
+
+// Range is the cached expected band for one symbol.
+type Range struct {
+	SymbolID   int64
+	BasisDay   string
+	Low        float64
+	High       float64
+	ComputedAt int64
+}
+
+func (s *Store) UpsertRange(ctx context.Context, symbolID int64, basis string, low, high float64, at int64) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO ranges(symbol_id, basis_day, low, high, computed_at) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(symbol_id) DO UPDATE SET
+  basis_day = excluded.basis_day,
+  low = excluded.low,
+  high = excluded.high,
+  computed_at = excluded.computed_at`, symbolID, basis, low, high, at)
+	return err
+}
+
+func (s *Store) Range(ctx context.Context, symbolID int64) (Range, error) {
+	var r Range
+	err := s.db.QueryRowContext(ctx, `SELECT symbol_id, basis_day, low, high, computed_at FROM ranges WHERE symbol_id = ?`, symbolID).
+		Scan(&r.SymbolID, &r.BasisDay, &r.Low, &r.High, &r.ComputedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Range{}, ErrNotFound
+	}
+	return r, err
+}
+
+// RangeStatus is the latest two session dates plus the cached basis, so the
+// tick can decide whether a band is current without reading every bar.
+type RangeStatus struct {
+	SymbolID   int64
+	AssetClass string
+	LastDay    string
+	PrevDay    string
+	BasisDay   string
+	ComputedAt int64
+}
+
+func (s *Store) RangeStatuses(ctx context.Context) ([]RangeStatus, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, s.asset_class,
+       COALESCE((SELECT MAX(day) FROM bars b WHERE b.symbol_id = s.id), ''),
+       COALESCE((SELECT MAX(day) FROM bars b WHERE b.symbol_id = s.id AND day < (
+         SELECT MAX(day) FROM bars b2 WHERE b2.symbol_id = s.id
+       )), ''),
+       COALESCE(r.basis_day, ''),
+       COALESCE(r.computed_at, 0)
+FROM symbols s
+LEFT JOIN ranges r ON r.symbol_id = s.id
+WHERE EXISTS (SELECT 1 FROM group_symbols gs WHERE gs.symbol_id = s.id)
+   OR EXISTS (SELECT 1 FROM alerts a WHERE a.symbol_id = s.id AND a.status = 'armed')
+ORDER BY s.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RangeStatus
+	for rows.Next() {
+		var st RangeStatus
+		if err := rows.Scan(&st.SymbolID, &st.AssetClass, &st.LastDay, &st.PrevDay, &st.BasisDay, &st.ComputedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
 }
 
 type QuoteRow struct {

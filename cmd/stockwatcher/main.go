@@ -73,6 +73,11 @@ func serve() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ranges, err := sy.RefreshRanges(ctx)
+	if err != nil {
+		return err
+	}
+	slog.Info("ranges", "updated", ranges)
 	go func() {
 		<-ctx.Done()
 		shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)

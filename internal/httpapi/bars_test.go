@@ -32,7 +32,13 @@ func TestBarsResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sym, _, err := st.AddToGroup(ctx, board.Groups[0].ID, store.NewSymbol{
+	var gid int64
+	for _, g := range board.Groups {
+		if !g.Synthetic {
+			gid = g.ID
+		}
+	}
+	sym, _, err := st.AddToGroup(ctx, gid, store.NewSymbol{
 		AssetClass: market.Stock, Display: "AAPL", ProviderSymbol: "AAPL", Name: "Apple",
 	})
 	if err != nil {

@@ -1,6 +1,7 @@
 package market
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -184,6 +185,112 @@ func TestNeedsTail(t *testing.T) {
 	fridaySync := sat.Add(-2 * time.Hour)
 	if NeedsTail(Stock, "2024-01-12", &fridaySync, sat) {
 		t.Fatal("friday bar on saturday should stay")
+	}
+}
+
+func TestExpectedBand(t *testing.T) {
+	closes := []float64{100}
+	for i := 0; i < 20; i++ {
+		r := 0.01
+		if i%2 == 1 {
+			r = -0.01
+		}
+		closes = append(closes, closes[len(closes)-1]*(1+r))
+	}
+	bars := make([]Bar, len(closes))
+	for i, c := range closes {
+		bars[i] = Bar{Day: fmt.Sprintf("2024-01-%02d", i+1), Close: c}
+	}
+	low, high, ok := ExpectedBand(bars)
+	if !ok {
+		t.Fatal("expected a band")
+	}
+	// Ten +1% and ten -1% returns. Mean is 0, sample variance is 20*(0.01^2)/19.
+	sigma := math.Sqrt(20 * 0.01 * 0.01 / 19)
+	last := closes[len(closes)-1]
+	near(t, low, last*(1-sigma))
+	near(t, high, last*(1+sigma))
+
+	if _, _, ok := ExpectedBand(bars[:20]); ok {
+		t.Fatal("20 closes are one return short")
+	}
+	flat := make([]Bar, 21)
+	for i := range flat {
+		flat[i] = Bar{Day: fmt.Sprintf("2024-03-%02d", i+1), Close: 50}
+	}
+	if _, _, ok := ExpectedBand(flat); ok {
+		t.Fatal("a flat series has no band")
+	}
+}
+
+func TestCompletedBarsDropsFormingSession(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bars := []Bar{
+		{Day: "2024-01-11", Close: 10},
+		{Day: "2024-01-12", Close: 11},
+	}
+	open := time.Date(2024, 1, 12, 15, 0, 0, 0, ny)
+	got := CompletedBars(Stock, bars, open)
+	if len(got) != 1 || got[0].Day != "2024-01-11" {
+		t.Fatalf("stock open %+v", got)
+	}
+	closed := time.Date(2024, 1, 12, 16, 0, 0, 0, ny)
+	if len(CompletedBars(Stock, bars, closed)) != 2 {
+		t.Fatal("stock close should keep Friday")
+	}
+	fut := time.Date(2024, 1, 12, 16, 30, 0, 0, ny)
+	if len(CompletedBars(Future, bars, fut)) != 1 {
+		t.Fatal("futures stay open until 17:00")
+	}
+	futClose := time.Date(2024, 1, 12, 17, 0, 0, 0, ny)
+	if len(CompletedBars(Future, bars, futClose)) != 2 {
+		t.Fatal("futures close")
+	}
+	sat := time.Date(2024, 1, 13, 12, 0, 0, 0, ny)
+	if len(CompletedBars(Stock, bars, sat)) != 2 {
+		t.Fatal("weekend should keep Friday")
+	}
+	cryptoNow := time.Date(2024, 1, 12, 23, 0, 0, 0, time.UTC)
+	if len(CompletedBars(Crypto, bars, cryptoNow)) != 1 {
+		t.Fatal("crypto should drop the current UTC day")
+	}
+	next := time.Date(2024, 1, 13, 0, 30, 0, 0, time.UTC)
+	if len(CompletedBars(Crypto, bars, next)) != 2 {
+		t.Fatal("crypto after midnight should keep Friday")
+	}
+
+	series := make([]Bar, 22)
+	for i := range series {
+		series[i] = Bar{Day: fmt.Sprintf("2024-01-%02d", i+1), Close: 100 + float64(i%4)}
+	}
+	series[len(series)-1].Close = 400
+	monday := time.Date(2024, 1, 22, 10, 0, 0, 0, ny)
+	done := CompletedBars(Stock, series, monday)
+	if len(done) != 21 || done[len(done)-1].Day != "2024-01-21" {
+		t.Fatalf("completed len %d", len(done))
+	}
+	low, high, ok := ExpectedBand(done)
+	allLow, allHigh, allOK := ExpectedBand(series)
+	baseLow, baseHigh, baseOK := ExpectedBand(series[:21])
+	if !ok || !allOK || !baseOK {
+		t.Fatal("band availability")
+	}
+	if allLow == low && allHigh == high {
+		t.Fatal("the forming close should change the band")
+	}
+	near(t, low, baseLow)
+	near(t, high, baseHigh)
+	if CompletedDay(Stock, "2024-01-12", "2024-01-11", open) != "2024-01-11" {
+		t.Fatal("forming day")
+	}
+	if CompletedDay(Stock, "2024-01-12", "2024-01-11", closed) != "2024-01-12" {
+		t.Fatal("closed day")
+	}
+	if CompletedDay(Stock, "", "", open) != "" {
+		t.Fatal("empty")
 	}
 }
 

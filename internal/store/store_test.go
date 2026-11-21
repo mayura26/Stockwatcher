@@ -22,10 +22,13 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(board.Groups) != 1 || board.Groups[0].Name != "Watch" || board.Groups[0].Color != "#c6a15b" || board.Groups[0].Icon != "mark" {
+	if len(board.Groups) != 2 || board.Groups[0].Name != "Notable" || !board.Groups[0].Synthetic || len(board.Groups[0].Rows) != 0 {
 		t.Fatalf("%+v", board.Groups)
 	}
-	gid := board.Groups[0].ID
+	if board.Groups[1].Name != "Watch" || board.Groups[1].Color != "#c6a15b" || board.Groups[1].Icon != "mark" {
+		t.Fatalf("%+v", board.Groups[1])
+	}
+	gid := board.Groups[1].ID
 	sym, created, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Future, Display: "ES", ProviderSymbol: "ES=F", Name: "E-mini S&P 500"})
 	if err != nil || !created {
 		t.Fatal(err, created)
@@ -42,9 +45,10 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := board.Groups[0].Rows[0]
-	if len(board.Groups[0].Rows) != 1 || row.Display != "ES" || row.Price == nil || *row.Price != 5800 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || row.ChangeH4 != nil || len(row.Sparkline) != 3 || row.Sparkline[2] != 3 {
-		t.Fatalf("%+v", board.Groups[0].Rows)
+	watch := groupNamed(t, board, "Watch")
+	row := watch.Rows[0]
+	if len(watch.Rows) != 1 || row.Display != "ES" || row.Price == nil || *row.Price != 5800 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || row.ChangeH4 != nil || len(row.Sparkline) != 3 || row.Sparkline[2] != 3 {
+		t.Fatalf("%+v", watch.Rows)
 	}
 	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, nil, time.Now().Unix(), false); err != nil {
 		t.Fatal(err)
@@ -53,7 +57,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row = board.Groups[0].Rows[0]
+	row = groupNamed(t, board, "Watch").Rows[0]
 	if row.Price == nil || *row.Price != 5801 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || len(row.Sparkline) != 3 {
 		t.Fatalf("preserved %+v", row)
 	}
@@ -133,9 +137,107 @@ INSERT INTO groups(name, position) VALUES ('Legacy', 0);
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(board.Groups) != 1 || board.Groups[0].Name != "Legacy" || board.Groups[0].Color != "#c6a15b" || board.Groups[0].Icon != "mark" {
+	if len(board.Groups) != 2 || board.Groups[0].Name != "Notable" || !board.Groups[0].Synthetic {
 		t.Fatalf("%+v", board.Groups)
 	}
+	legacy := board.Groups[1]
+	if legacy.Name != "Legacy" || legacy.Color != "#c6a15b" || legacy.Icon != "mark" {
+		t.Fatalf("%+v", legacy)
+	}
+}
+
+func TestNotableGroup(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	board, err := st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := groupNamed(t, board, "Watch").ID
+	add := func(display string) Symbol {
+		t.Helper()
+		sym, _, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Stock, Display: display, ProviderSymbol: display, Name: display})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sym
+	}
+	quote := func(id int64, price float64, spark []float64) {
+		t.Helper()
+		if err := st.UpsertQuote(ctx, id, price, nil, nil, nil, nil, nil, nil, spark, 1, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.UpsertRange(ctx, id, "2024-01-02", 10, 12, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inside := add("IN")
+	spike := add("SP")
+	far := add("FAR")
+	quote(inside.ID, 11, []float64{11, 11.2})
+	quote(spike.ID, 11, []float64{11, 13})
+	quote(far.ID, 16, []float64{11, 11.4})
+	alertOnly := add("AL")
+	if err := st.RemoveFromGroup(ctx, gid, alertOnly.ID); err != nil {
+		t.Fatal(err)
+	}
+	quote(alertOnly.ID, 9, []float64{11})
+	if _, err := st.CreateAlert(ctx, alertOnly.ID, "below", "once", 8); err != nil {
+		t.Fatal(err)
+	}
+
+	board, err = st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notable := board.Groups[0]
+	if notable.Name != "Notable" || !notable.Synthetic || notable.ID != 0 {
+		t.Fatalf("%+v", notable)
+	}
+	got := make([]string, len(notable.Rows))
+	for i, row := range notable.Rows {
+		got[i] = row.Display
+	}
+	// FAR is furthest past the band. SP and AL tie; SP was seen first.
+	want := []string{"FAR", "SP", "AL"}
+	if len(got) != len(want) {
+		t.Fatalf("notable %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("notable %v", got)
+		}
+	}
+	watch := groupNamed(t, board, "Watch")
+	if len(watch.Rows) != 3 {
+		t.Fatalf("watch %+v", watch.Rows)
+	}
+	var stamped Row
+	var found bool
+	for _, row := range watch.Rows {
+		if row.Display == "SP" {
+			stamped = row
+			found = true
+		}
+	}
+	if !found || stamped.RangeLow == nil || *stamped.RangeLow != 10 || stamped.RangeHigh == nil || *stamped.RangeHigh != 12 {
+		t.Fatalf("stamped %+v", stamped)
+	}
+}
+
+func groupNamed(t *testing.T, board Board, name string) Group {
+	t.Helper()
+	for _, g := range board.Groups {
+		if g.Name == name {
+			return g
+		}
+	}
+	t.Fatalf("missing %s", name)
+	return Group{}
 }
 
 func TestAlertRepeatMigrationAndFire(t *testing.T) {
