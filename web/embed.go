@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//go:embed index.html manifest.webmanifest sw.js css js fonts vendor icon-192.png icon-512.png badge.svg badge-96.png
+//go:embed index.html manifest.webmanifest sw.js css js fonts vendor pwa-192.png pwa-512.png apple-touch-180.png badge.svg badge-96.png
 var FS embed.FS
 
 func init() {
@@ -34,7 +34,7 @@ func Handler() http.Handler {
 
 func isIcon(p string) bool {
 	switch p {
-	case "/icon-192.png", "/icon-512.png", "/badge-96.png", "/badge.svg":
+	case "/pwa-192.png", "/pwa-512.png", "/apple-touch-180.png", "/badge-96.png", "/badge.svg":
 		return true
 	default:
 		return false

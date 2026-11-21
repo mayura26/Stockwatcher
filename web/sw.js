@@ -1,4 +1,4 @@
-const CACHE = 'stockwatcher-v3';
+const CACHE = 'stockwatcher-v4';
 const SHELL = [
   '/',
   '/css/app.css',
@@ -10,8 +10,9 @@ const SHELL = [
   '/js/search.js',
   '/js/alerts.js',
   '/manifest.webmanifest',
-  '/icon-192.png?v=3',
-  '/icon-512.png?v=3',
+  '/pwa-192.png',
+  '/pwa-512.png',
+  '/apple-touch-180.png',
   '/badge-96.png',
 ];
 
@@ -60,7 +61,7 @@ self.addEventListener('push', (event) => {
     body: data.body,
     tag: data.alert_id ? 'alert-' + data.alert_id : 'stockwatcher',
     data,
-    icon: '/icon-192.png?v=3',
+    icon: '/pwa-192.png',
     badge: '/badge-96.png',
   }));
 });
