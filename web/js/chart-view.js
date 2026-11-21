@@ -1,4 +1,4 @@
-import { formatPct, formatPrice, pctClass, priceFormat } from './format.js';
+import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, repeatLabel } from './format.js';
 
 let chartsPromise;
 
@@ -21,6 +21,11 @@ class SwChart extends HTMLElement {
     this.resolution = 'D';
     this.kind = 'candle';
     this.direction = 'above';
+    this.repeat = 'once';
+    this.mine = [];
+    this.alertLines = [];
+    this.previewPrice = null;
+    this.previewLine = null;
     this.innerHTML = `
       <div class="chart-screen">
         <header class="top">
@@ -49,9 +54,13 @@ class SwChart extends HTMLElement {
         <p class="chart-msg" data-msg></p>
         <form class="alert-form">
           <input name="level" inputmode="decimal" placeholder="Level" aria-label="Alert level">
+          <div class="seg" role="group" aria-label="Repeat">
+            <button type="button" data-repeat="once" aria-pressed="true">Once</button>
+            <button type="button" data-repeat="continuous" aria-pressed="false">Continuous</button>
+          </div>
           <div class="seg" role="group" aria-label="Direction">
-            <button type="button" data-dir="above" aria-pressed="true">Above</button>
-            <button type="button" data-dir="below" aria-pressed="false">Below</button>
+            <button type="button" data-dir="above" aria-pressed="true">Cross up</button>
+            <button type="button" data-dir="below" aria-pressed="false">Cross down</button>
           </div>
           <button type="submit" class="text-btn">Set</button>
         </form>
@@ -69,9 +78,16 @@ class SwChart extends HTMLElement {
       }
       this.dispatchEvent(new CustomEvent('sw-action', {
         bubbles: true,
-        detail: { type: 'set-alert', symbolId: this.symbolId, direction: this.direction, level },
+        detail: { type: 'set-alert', symbolId: this.symbolId, direction: this.direction, repeat: this.repeat, level },
       }));
       event.target.reset();
+      this.previewPrice = null;
+      this.syncPreviewLine();
+    });
+    this.querySelector('input[name="level"]').addEventListener('input', (event) => {
+      const level = Number(event.target.value);
+      this.previewPrice = level > 0 ? level : null;
+      this.syncPreviewLine();
     });
     this.addEventListener('click', (event) => {
       const kind = event.target.closest('[data-kind]');
@@ -91,6 +107,11 @@ class SwChart extends HTMLElement {
         this.direction = dir.dataset.dir;
         this.syncPressed();
       }
+      const repeat = event.target.closest('[data-repeat]');
+      if (repeat) {
+        this.repeat = repeat.dataset.repeat;
+        this.syncPressed();
+      }
       const rearm = event.target.closest('[data-rearm]');
       if (rearm) this.dispatchEvent(new CustomEvent('sw-action', { bubbles: true, detail: { type: 'rearm-alert', id: Number(rearm.dataset.rearm) } }));
       const del = event.target.closest('[data-delete-alert]');
@@ -106,6 +127,11 @@ class SwChart extends HTMLElement {
       this.resolution = 'D';
       this.kind = 'candle';
       this.direction = 'above';
+      this.repeat = 'once';
+      this.previewPrice = null;
+      this.mine = [];
+      const level = this.querySelector('input[name="level"]');
+      if (level) level.value = '';
       this.destroyChart();
       this.syncPressed();
     }
@@ -151,16 +177,17 @@ class SwChart extends HTMLElement {
   async loadAlerts() {
     try {
       const data = await this.api.get('/api/alerts');
-      const mine = (data.alerts || []).filter((a) => a.symbol_id === this.symbolId);
+      this.mine = (data.alerts || []).filter((a) => a.symbol_id === this.symbolId);
       const host = this.querySelector('[data-alerts]');
-      host.innerHTML = mine.map((a) => `
+      host.innerHTML = this.mine.map((a) => `
         <li>
-          <span>${a.direction} ${formatPrice(a.level)} <span class="sub">${a.status}</span></span>
+          <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${repeatLabel(a.repeat)} · ${a.status}</span></span>
           <span>
-            ${a.status === 'triggered' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
+            ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
             <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>
           </span>
         </li>`).join('');
+      this.drawAlertLines();
     } catch (err) {
       /* the board banner reports this if the app action failed; a quiet chart still stands */
     }
@@ -172,6 +199,7 @@ class SwChart extends HTMLElement {
     let LW;
     try {
       LW = await loadCharts();
+      this.lw = LW;
     } catch (err) {
       this.setMsg(err.message);
       return;
@@ -206,10 +234,22 @@ class SwChart extends HTMLElement {
           horzLine: { color: 'rgba(198,161,91,0.5)', labelBackgroundColor: '#1c1f17' },
         },
       });
+      this.chart.subscribeCrosshairMove((param) => {
+        const price = this.priceAt(param && param.point);
+        if (price == null) return;
+        this.rememberLevel(price, false);
+      });
+      this.chart.subscribeClick((param) => {
+        const price = this.priceAt(param && param.point);
+        if (price == null) return;
+        this.rememberLevel(price, true);
+      });
     }
     if (this.series) {
       this.chart.removeSeries(this.series);
       this.series = null;
+      this.alertLines = [];
+      this.previewLine = null;
     }
     const bars = this.payload?.bars || [];
     const last = bars[bars.length - 1].close;
@@ -235,12 +275,69 @@ class SwChart extends HTMLElement {
       this.series.setData(bars);
     }
     this.chart.timeScale().fitContent();
+    this.drawAlertLines();
+    this.syncPreviewLine();
+  }
+
+  priceAt(point) {
+    if (!point || !this.series || typeof this.series.coordinateToPrice !== 'function') return null;
+    const price = this.series.coordinateToPrice(point.y);
+    if (price == null || !Number.isFinite(price) || price <= 0) return null;
+    return price;
+  }
+
+  rememberLevel(price, force) {
+    this.previewPrice = price;
+    const input = this.querySelector('input[name="level"]');
+    if (input && (force || document.activeElement !== input)) input.value = levelInput(price);
+    this.syncPreviewLine();
+  }
+
+  drawAlertLines() {
+    if (!this.series || !this.lw) return;
+    for (const line of this.alertLines) this.series.removePriceLine(line);
+    this.alertLines = [];
+    const dashed = this.lw.LineStyle.Dashed;
+    const solid = this.lw.LineStyle.Solid;
+    for (const a of this.mine || []) {
+      const up = a.direction !== 'below';
+      this.alertLines.push(this.series.createPriceLine({
+        price: a.level,
+        color: up ? '#8eae8a' : '#c56b52',
+        lineWidth: 1,
+        lineStyle: a.repeat === 'continuous' ? dashed : solid,
+        axisLabelVisible: true,
+        title: up ? 'Up' : 'Down',
+      }));
+    }
+  }
+
+  syncPreviewLine() {
+    if (!this.series || !this.lw) return;
+    if (!(this.previewPrice > 0)) {
+      if (this.previewLine) {
+        this.series.removePriceLine(this.previewLine);
+        this.previewLine = null;
+      }
+      return;
+    }
+    const opts = {
+      price: this.previewPrice,
+      color: '#c6a15b',
+      lineWidth: 1,
+      lineStyle: this.lw.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: 'Alert',
+    };
+    if (this.previewLine) this.previewLine.applyOptions(opts);
+    else this.previewLine = this.series.createPriceLine(opts);
   }
 
   syncPressed() {
     for (const btn of this.querySelectorAll('[data-kind]')) btn.setAttribute('aria-pressed', btn.dataset.kind === this.kind ? 'true' : 'false');
     for (const btn of this.querySelectorAll('[data-res]')) btn.setAttribute('aria-pressed', btn.dataset.res === this.resolution ? 'true' : 'false');
     for (const btn of this.querySelectorAll('[data-dir]')) btn.setAttribute('aria-pressed', btn.dataset.dir === this.direction ? 'true' : 'false');
+    for (const btn of this.querySelectorAll('[data-repeat]')) btn.setAttribute('aria-pressed', btn.dataset.repeat === this.repeat ? 'true' : 'false');
   }
 
   setMsg(text) {
@@ -255,10 +352,21 @@ class SwChart extends HTMLElement {
       this.chart.remove();
       this.chart = null;
       this.series = null;
+      this.alertLines = [];
+      this.previewLine = null;
     }
   }
 
   disconnectedCallback() { this.destroyChart(); }
+}
+
+function levelInput(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '';
+  const abs = Math.abs(v);
+  let digits = 2;
+  if (abs < 1) digits = abs < 0.01 ? 6 : 4;
+  return String(Number(v.toFixed(digits)));
 }
 
 customElements.define('sw-chart', SwChart);

@@ -297,7 +297,8 @@ sw-chart, sw-alerts {
 }
 .chart-host { flex: 1; min-height: 220px; }
 .chart-msg { color: var(--muted); text-align: center; margin: 0; padding: 0.4rem 1rem; }
-.alert-form { padding: 0.6rem 1rem; border-top: 1px solid var(--line); }
+.alert-form { padding: 0.6rem 1rem; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.alert-form input { flex: 1 1 7.5rem; }
 .alert-mini { list-style: none; margin: 0; padding: 0 1rem 0.8rem; }
 .alert-mini li, .alert-list li {
   display: flex;

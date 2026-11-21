@@ -320,6 +320,7 @@ class SwApp extends HTMLElement {
         await this.api.post('/api/alerts', {
           symbol_id: detail.symbolId,
           direction: detail.direction,
+          repeat: detail.repeat || 'once',
           level: detail.level,
         });
         await this.querySelector('sw-chart').loadAlerts();

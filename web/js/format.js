@@ -27,6 +27,14 @@ export function formatClock(unix) {
   return h + ':' + m;
 }
 
+export function crossLabel(direction) {
+  return direction === 'below' ? 'cross down' : 'cross up';
+}
+
+export function repeatLabel(repeat) {
+  return repeat === 'continuous' ? 'continuous' : 'once';
+}
+
 export function priceFormat(price) {
   const abs = Math.abs(Number(price) || 0);
   let precision = 2;

@@ -353,6 +353,7 @@ func (s *Server) createAlert(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SymbolID  int64   `json:"symbol_id"`
 		Direction string  `json:"direction"`
+		Repeat    string  `json:"repeat"`
 		Level     float64 `json:"level"`
 	}
 	if !decode(w, r, &body) {
@@ -362,11 +363,18 @@ func (s *Server) createAlert(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "direction must be above or below")
 		return
 	}
+	if body.Repeat == "" {
+		body.Repeat = "once"
+	}
+	if body.Repeat != "once" && body.Repeat != "continuous" {
+		writeErr(w, http.StatusBadRequest, "repeat must be once or continuous")
+		return
+	}
 	if body.Level <= 0 {
 		writeErr(w, http.StatusBadRequest, "level must be positive")
 		return
 	}
-	a, err := s.Store.CreateAlert(r.Context(), body.SymbolID, body.Direction, body.Level)
+	a, err := s.Store.CreateAlert(r.Context(), body.SymbolID, body.Direction, body.Repeat, body.Level)
 	if mapErr(w, err) {
 		return
 	}

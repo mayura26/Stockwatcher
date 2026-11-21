@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   direction TEXT NOT NULL CHECK (direction IN ('above','below')),
   level REAL NOT NULL,
+  repeat TEXT NOT NULL DEFAULT 'once' CHECK (repeat IN ('once','continuous')),
   status TEXT NOT NULL DEFAULT 'armed' CHECK (status IN ('armed','triggered')),
   last_price REAL,
   triggered_at INTEGER,
@@ -143,6 +144,39 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_bars_symbol_day ON bars(symbol_id, day);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 `)
+	if err != nil {
+		return err
+	}
+	return s.ensureAlertRepeat()
+}
+
+// ensureAlertRepeat adds the repeat column on databases created before one-off
+// and continuous alerts. Existing rows become one-off.
+func (s *Store) ensureAlertRepeat() error {
+	rows, err := s.db.Query(`PRAGMA table_info(alerts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "repeat" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE alerts ADD COLUMN repeat TEXT NOT NULL DEFAULT 'once' CHECK (repeat IN ('once','continuous'))`)
 	return err
 }
 
@@ -685,6 +719,7 @@ type Alert struct {
 	AssetClass  string   `json:"asset_class"`
 	Direction   string   `json:"direction"`
 	Level       float64  `json:"level"`
+	Repeat      string   `json:"repeat"`
 	Status      string   `json:"status"`
 	LastPrice   *float64 `json:"last_price"`
 	TriggeredAt *int64   `json:"triggered_at"`
@@ -694,7 +729,7 @@ type Alert struct {
 
 func (s *Store) ListAlerts(ctx context.Context) ([]Alert, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT a.id, a.symbol_id, s.display, s.name, s.asset_class, a.direction, a.level, a.status,
+SELECT a.id, a.symbol_id, s.display, s.name, s.asset_class, a.direction, a.level, a.repeat, a.status,
        a.last_price, a.triggered_at, a.created_at, q.price
 FROM alerts a
 JOIN symbols s ON s.id = a.symbol_id
@@ -723,7 +758,7 @@ func scanAlert(sc scanner) (Alert, error) {
 	var a Alert
 	var last, price sql.NullFloat64
 	var triggered sql.NullInt64
-	err := sc.Scan(&a.ID, &a.SymbolID, &a.Display, &a.Name, &a.AssetClass, &a.Direction, &a.Level, &a.Status, &last, &triggered, &a.CreatedAt, &price)
+	err := sc.Scan(&a.ID, &a.SymbolID, &a.Display, &a.Name, &a.AssetClass, &a.Direction, &a.Level, &a.Repeat, &a.Status, &last, &triggered, &a.CreatedAt, &price)
 	if err != nil {
 		return Alert{}, err
 	}
@@ -735,7 +770,7 @@ func scanAlert(sc scanner) (Alert, error) {
 
 func (s *Store) Alert(ctx context.Context, id int64) (Alert, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT a.id, a.symbol_id, s.display, s.name, s.asset_class, a.direction, a.level, a.status,
+SELECT a.id, a.symbol_id, s.display, s.name, s.asset_class, a.direction, a.level, a.repeat, a.status,
        a.last_price, a.triggered_at, a.created_at, q.price
 FROM alerts a
 JOIN symbols s ON s.id = a.symbol_id
@@ -748,9 +783,12 @@ WHERE a.id = ?`, id)
 	return a, err
 }
 
-func (s *Store) CreateAlert(ctx context.Context, symbolID int64, direction string, level float64) (Alert, error) {
+func (s *Store) CreateAlert(ctx context.Context, symbolID int64, direction, repeat string, level float64) (Alert, error) {
 	if _, err := s.Symbol(ctx, symbolID); err != nil {
 		return Alert{}, err
+	}
+	if repeat == "" {
+		repeat = "once"
 	}
 	var last *float64
 	if q, err := s.Quote(ctx, symbolID); err == nil {
@@ -758,7 +796,7 @@ func (s *Store) CreateAlert(ctx context.Context, symbolID int64, direction strin
 		last = &v
 	}
 	now := time.Now().Unix()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO alerts(symbol_id, direction, level, status, last_price, created_at) VALUES (?, ?, ?, 'armed', ?, ?)`, symbolID, direction, level, last, now)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO alerts(symbol_id, direction, level, repeat, status, last_price, created_at) VALUES (?, ?, ?, ?, 'armed', ?, ?)`, symbolID, direction, level, repeat, last, now)
 	if err != nil {
 		return Alert{}, err
 	}
@@ -812,11 +850,12 @@ type ArmedAlert struct {
 	Name      string
 	Direction string
 	Level     float64
+	Repeat    string
 	LastPrice *float64
 }
 
 func (s *Store) ArmedAlerts(ctx context.Context) ([]ArmedAlert, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.symbol_id, s.display, s.name, a.direction, a.level, a.last_price FROM alerts a JOIN symbols s ON s.id = a.symbol_id WHERE a.status = 'armed' ORDER BY a.id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.symbol_id, s.display, s.name, a.direction, a.level, a.repeat, a.last_price FROM alerts a JOIN symbols s ON s.id = a.symbol_id WHERE a.status = 'armed' ORDER BY a.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -825,13 +864,24 @@ func (s *Store) ArmedAlerts(ctx context.Context) ([]ArmedAlert, error) {
 	for rows.Next() {
 		var a ArmedAlert
 		var last sql.NullFloat64
-		if err := rows.Scan(&a.ID, &a.SymbolID, &a.Display, &a.Name, &a.Direction, &a.Level, &last); err != nil {
+		if err := rows.Scan(&a.ID, &a.SymbolID, &a.Display, &a.Name, &a.Direction, &a.Level, &a.Repeat, &last); err != nil {
 			return nil, err
 		}
 		a.LastPrice = floatPtr(last)
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// NoteContinuousFire records a cross and leaves the alert armed.
+// False means it was not an armed continuous alert.
+func (s *Store) NoteContinuousFire(ctx context.Context, id int64, price float64, at int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE alerts SET last_price = ?, triggered_at = ? WHERE id = ? AND status = 'armed' AND repeat = 'continuous'`, price, at, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // TriggerAlert marks a cross. False means another run already triggered it.

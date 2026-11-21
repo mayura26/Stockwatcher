@@ -30,6 +30,12 @@ func TestCrossed(t *testing.T) {
 	}
 }
 
+func TestCrossPhrase(t *testing.T) {
+	if CrossPhrase("above") != "up" || CrossPhrase("below") != "down" || CrossPhrase("sideways") != "" {
+		t.Fatalf("up %q down %q other %q", CrossPhrase("above"), CrossPhrase("below"), CrossPhrase("sideways"))
+	}
+}
+
 func TestEvaluateFirstObservationSilent(t *testing.T) {
 	fire, next := Evaluate("above", 10, nil, 100)
 	if fire || next != 100 {

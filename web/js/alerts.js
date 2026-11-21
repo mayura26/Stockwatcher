@@ -1,4 +1,4 @@
-import { formatPrice } from './format.js';
+import { crossLabel, formatPrice, repeatLabel } from './format.js';
 
 class SwAlerts extends HTMLElement {
   connectedCallback() {
@@ -38,9 +38,9 @@ class SwAlerts extends HTMLElement {
     }
     list.innerHTML = this.alerts.map((a) => `
       <li>
-        <span><strong>${escapeHTML(a.display)}</strong> ${escapeHTML(a.direction)} ${formatPrice(a.level)} <span class="sub">${escapeHTML(a.status)}</span></span>
+        <span><strong>${escapeHTML(a.display)}</strong> ${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${repeatLabel(a.repeat)} · ${escapeHTML(a.status)}</span></span>
         <span>
-          ${a.status === 'triggered' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
+          ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
           <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>
         </span>
       </li>`).join('');

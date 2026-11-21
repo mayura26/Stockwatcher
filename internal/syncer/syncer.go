@@ -384,14 +384,19 @@ func (s *Syncer) evalAlerts(ctx context.Context, quotes map[int64]market.Quote) 
 			}
 			continue
 		}
-		ok, err := s.Store.TriggerAlert(ctx, a.ID, q.Price, now)
+		var fired bool
+		if a.Repeat == "continuous" {
+			fired, err = s.Store.NoteContinuousFire(ctx, a.ID, q.Price, now)
+		} else {
+			fired, err = s.Store.TriggerAlert(ctx, a.ID, q.Price, now)
+		}
 		if err != nil {
 			return pushed, err
 		}
-		if !ok {
+		if !fired {
 			continue
 		}
-		title := fmt.Sprintf("%s crossed %s %s", a.Display, a.Direction, market.FormatNumber(a.Level))
+		title := fmt.Sprintf("%s crossed %s %s", a.Display, alerts.CrossPhrase(a.Direction), market.FormatNumber(a.Level))
 		body := "Last " + market.FormatNumber(q.Price)
 		if a.Name != "" && !strings.EqualFold(a.Name, a.Display) {
 			body = a.Name + " · " + body
