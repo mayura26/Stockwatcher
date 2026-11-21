@@ -509,7 +509,7 @@ func cleanAppearance(color, icon string) (string, string, error) {
 		icon = "mark"
 	}
 	switch color {
-	case "#c6a15b", "#8eae8a", "#c56b52", "#e8e0cc", "#8aa0ae", "#a35d6a":
+	case "#c6a15b", "#8eae8a", "#c56b52", "#e8e0cc", "#8aa0ae", "#a35d6a", "#d4895c", "#a3ae62", "#5eaea4", "#6e92d4", "#b196cc", "#d08a9c":
 	default:
 		return "", "", errors.New("unknown color")
 	}

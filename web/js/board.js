@@ -11,6 +11,12 @@ const COLORS = [
   { value: '#e8e0cc', label: 'Sand' },
   { value: '#8aa0ae', label: 'Slate' },
   { value: '#a35d6a', label: 'Wine' },
+  { value: '#d4895c', label: 'Copper' },
+  { value: '#a3ae62', label: 'Olive' },
+  { value: '#5eaea4', label: 'Tide' },
+  { value: '#6e92d4', label: 'Dusk' },
+  { value: '#b196cc', label: 'Iris' },
+  { value: '#d08a9c', label: 'Rose' },
 ];
 
 const ICONS = [
@@ -189,7 +195,7 @@ class SwBoard extends HTMLElement {
     const group = this.group;
     const editing = mode === 'edit' && group;
     this.draft = {
-      color: chipColor(editing ? group.color : COLORS[0].value),
+      color: chipColor(editing ? group.color : nextColor(this.board?.groups)),
       icon: iconId(editing ? group.icon : 'mark'),
     };
     this.querySelector('#group-sheet-title').textContent = editing ? 'Edit group' : 'New group';
@@ -536,6 +542,24 @@ function iconSVG(id) {
 
 function chipColor(value) {
   return COLORS.some((c) => c.value === String(value || '').toLowerCase()) ? String(value).toLowerCase() : COLORS[0].value;
+}
+
+function nextColor(groups) {
+  const counts = new Map(COLORS.map((c) => [c.value, 0]));
+  for (const group of groups || []) {
+    const color = chipColor(group.color);
+    counts.set(color, (counts.get(color) || 0) + 1);
+  }
+  let pick = COLORS[0].value;
+  let least = Infinity;
+  for (const color of COLORS) {
+    const n = counts.get(color.value) || 0;
+    if (n < least) {
+      least = n;
+      pick = color.value;
+    }
+  }
+  return pick;
 }
 
 function chg(n) {
