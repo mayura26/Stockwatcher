@@ -523,7 +523,7 @@ sw-chart, sw-alerts {
 .alert-form { padding: 0.6rem 1rem; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .alert-form input { flex: 1 1 7.5rem; }
 .alert-mini { list-style: none; margin: 0; padding: 0 1rem 0.8rem; }
-.alert-mini li, .alert-list li {
+.alert-mini li, .alert-rows li, .alert-empty {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
@@ -533,11 +533,42 @@ sw-chart, sw-alerts {
   font-size: 0.9rem;
 }
 .alert-list { list-style: none; margin: 0; padding: 0.4rem 0 1.5rem; }
+.alert-group { border-bottom: 1px solid var(--line-soft); }
+.alert-group summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  cursor: pointer;
+  font-size: 0.9rem;
+  list-style: none;
+}
+.alert-group summary::-webkit-details-marker { display: none; }
+.alert-group summary::marker { content: ''; }
+.alert-group summary strong::before {
+  content: '';
+  display: inline-block;
+  width: 0.35rem;
+  height: 0.35rem;
+  margin-right: 0.5rem;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg) translateY(-0.08rem);
+}
+.alert-group details[open] summary strong::before {
+  transform: rotate(45deg) translateY(-0.12rem);
+}
+.alert-rows { list-style: none; margin: 0; padding: 0 0 0.15rem 0.9rem; }
+.alert-rows li { border-bottom: 0; border-top: 1px solid var(--line-soft); padding: 0.55rem 0; }
+.alert-empty { border-bottom: 0; }
 .px-block { text-align: right; }
 .px-block .px { font-size: 1rem; }
 .back { color: var(--brass); min-height: 44px; padding-right: 0.6rem; }
 .note { color: var(--muted); font-size: 0.82rem; margin: 0.4rem 0 0.8rem; }
-.push-row { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; padding: 0.3rem 0 0.6rem; }
+.push-row { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; padding: 0.3rem 0 0.6rem; flex-wrap: wrap; }
+.push-actions { display: flex; gap: 0.45rem; align-items: center; flex-wrap: wrap; }
+.push-actions .btn { margin-top: 0; }
 
 @keyframes rise {
   from { transform: translateY(12px); opacity: 0.5; }

@@ -2,6 +2,7 @@ import { crossLabel, formatPrice, repeatLabel } from './format.js';
 
 class SwAlerts extends HTMLElement {
   connectedCallback() {
+    this.openSymbols = new Set();
     this.innerHTML = `
       <div class="alerts-screen">
         <header class="top">
@@ -11,7 +12,10 @@ class SwAlerts extends HTMLElement {
         </header>
         <div class="sheet-pad">
           <div class="push-row">
-            <button type="button" class="btn" data-push style="margin-top:0">Enable alerts</button>
+            <span class="push-actions">
+              <button type="button" class="btn" data-push>Enable alerts</button>
+              <button type="button" class="btn" data-test>Test</button>
+            </span>
             <span class="sub" data-push-state></span>
           </div>
           <p class="note">On iPhone, add Stockwatcher to the Home Screen first. Push needs iOS 16.4 or later, and the watcher only runs while the server’s scheduled task is on.</p>
@@ -20,6 +24,14 @@ class SwAlerts extends HTMLElement {
       </div>`;
     this.querySelector('[data-back]').addEventListener('click', () => { location.hash = '#/'; });
     this.querySelector('[data-push]').addEventListener('click', () => this.enable());
+    this.querySelector('[data-test]').addEventListener('click', () => this.testPush());
+    this.querySelector('[data-list]').addEventListener('toggle', (event) => {
+      const details = event.target.closest('details[data-symbol]');
+      if (!details || !this.openSymbols) return;
+      const id = Number(details.dataset.symbol);
+      if (details.open) this.openSymbols.add(id);
+      else this.openSymbols.delete(id);
+    }, true);
     this.addEventListener('click', (event) => {
       const rearm = event.target.closest('[data-rearm]');
       if (rearm) this.emit({ type: 'rearm-alert', id: Number(rearm.dataset.rearm) });
@@ -32,18 +44,55 @@ class SwAlerts extends HTMLElement {
     this.alerts = alerts || [];
     const list = this.querySelector('[data-list]');
     if (!list) return;
+    if (!this.openSymbols) this.openSymbols = new Set();
+    list.querySelectorAll('details[data-symbol]').forEach((details) => {
+      const id = Number(details.dataset.symbol);
+      if (details.open) this.openSymbols.add(id);
+      else this.openSymbols.delete(id);
+    });
     if (!this.alerts.length) {
-      list.innerHTML = '<li><span class="sub">No alerts yet. Set one from a chart.</span></li>';
+      this.openSymbols.clear();
+      list.innerHTML = '<li class="alert-empty"><span class="sub">No alerts yet. Set one from a chart.</span></li>';
       return;
     }
-    list.innerHTML = this.alerts.map((a) => `
-      <li>
-        <span><strong>${escapeHTML(a.display)}</strong> ${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${repeatLabel(a.repeat)} · ${escapeHTML(a.status)}</span></span>
-        <span>
-          ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
-          <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>
-        </span>
+    const groups = groupAlerts(this.alerts);
+    const present = new Set(groups.map((group) => group.symbolId));
+    for (const id of this.openSymbols) {
+      if (!present.has(id)) this.openSymbols.delete(id);
+    }
+    list.innerHTML = groups.map((group) => `
+      <li class="alert-group">
+        <details data-symbol="${group.symbolId}"${this.openSymbols.has(group.symbolId) ? ' open' : ''}>
+          <summary>
+            <strong>${escapeHTML(group.display)}</strong>
+            <span class="sub">${group.alerts.length} ${group.alerts.length === 1 ? 'alert' : 'alerts'}</span>
+          </summary>
+          <ul class="alert-rows">
+            ${group.alerts.map((a) => `
+              <li>
+                <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${repeatLabel(a.repeat)} · ${escapeHTML(a.status)}</span></span>
+                <span>
+                  ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
+                  <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>
+                </span>
+              </li>`).join('')}
+          </ul>
+        </details>
       </li>`).join('');
+  }
+
+  async testPush() {
+    const state = this.querySelector('[data-push-state]');
+    const button = this.querySelector('[data-test]');
+    button.disabled = true;
+    try {
+      await this.api.post('/api/push/test', {});
+      state.textContent = 'Sent';
+    } catch (err) {
+      state.textContent = err.message;
+    } finally {
+      button.disabled = false;
+    }
   }
 
   async enable() {
@@ -71,6 +120,21 @@ class SwAlerts extends HTMLElement {
   emit(detail) {
     this.dispatchEvent(new CustomEvent('sw-action', { bubbles: true, detail }));
   }
+}
+
+function groupAlerts(alerts) {
+  const groups = [];
+  const byId = new Map();
+  for (const alert of alerts) {
+    let group = byId.get(alert.symbol_id);
+    if (!group) {
+      group = { symbolId: alert.symbol_id, display: alert.display, alerts: [] };
+      byId.set(alert.symbol_id, group);
+      groups.push(group);
+    }
+    group.alerts.push(alert);
+  }
+  return groups;
 }
 
 function decodeKey(value) {

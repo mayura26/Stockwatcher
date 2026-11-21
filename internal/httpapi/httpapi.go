@@ -13,6 +13,7 @@ import (
 	"stockwatcher/internal/config"
 	"stockwatcher/internal/market"
 	"stockwatcher/internal/market/finnhub"
+	"stockwatcher/internal/push"
 	"stockwatcher/internal/store"
 	"stockwatcher/internal/syncer"
 	"stockwatcher/web"
@@ -55,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/push/key", s.auth(s.pushKey))
 	mux.HandleFunc("POST /api/push/subscribe", s.auth(s.subscribe))
 	mux.HandleFunc("DELETE /api/push/subscribe", s.auth(s.unsubscribe))
+	mux.HandleFunc("POST /api/push/test", s.auth(s.testPush))
 	mux.Handle("/", web.Handler())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -463,6 +465,30 @@ func (s *Server) subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
+	var sender *push.Sender
+	if s.Sync != nil {
+		sender = s.Sync.Push
+	}
+	if sender == nil || !sender.Enabled() {
+		writeErr(w, http.StatusServiceUnavailable, "Push is not configured")
+		return
+	}
+	subs, err := s.Store.Subscriptions(r.Context())
+	if mapErr(w, err) {
+		return
+	}
+	if len(subs) == 0 {
+		writeErr(w, http.StatusBadRequest, "No push subscriptions")
+		return
+	}
+	sender.Notify(r.Context(), push.Note{Title: "Stockwatcher", Body: "Test alert"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "sent",
+		"subscriptions": len(subs),
+	})
 }
 
 func (s *Server) unsubscribe(w http.ResponseWriter, r *http.Request) {
