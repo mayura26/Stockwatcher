@@ -1,10 +1,11 @@
-const CACHE = 'stockwatcher-v4';
+const CACHE = 'stockwatcher-v5';
 const SHELL = [
   '/',
   '/css/app.css',
   '/js/app.js',
   '/js/api.js',
   '/js/format.js',
+  '/js/futures-mark.js',
   '/js/board.js',
   '/js/chart-view.js',
   '/js/search.js',

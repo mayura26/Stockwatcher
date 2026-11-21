@@ -258,6 +258,12 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
   box-sizing: border-box;
   display: block;
 }
+.avatar.fut {
+  background: var(--fut);
+  color: var(--fut-ink);
+  border-color: var(--fut-edge, transparent);
+  font-family: var(--mono);
+}
 .card-px {
   display: flex;
   flex-direction: column;

@@ -1,4 +1,5 @@
 import { formatClock, formatCompact, formatDay, formatPE, formatPct, formatPrice, pctClass, yahooQuoted } from './format.js';
+import { futureMark } from './futures-mark.js';
 
 const HOLD_MS = 400;
 const HOLD_SLOP = 10;
@@ -263,6 +264,12 @@ class SwBoard extends HTMLElement {
   }
 
   avatarHTML(row) {
+    const mark = row.asset_class === 'future' ? futureMark(row.display) : null;
+    if (mark) {
+      const inner = escapeHTML(monogram(row.display));
+      const style = `--fut:${mark.bg};--fut-ink:${mark.ink};--fut-edge:${mark.edge}`;
+      return `<span class="avatar fut" data-avatar="${row.id}" style="${style}" aria-hidden="true">${inner}</span>`;
+    }
     const url = this.logoURLs.get(row.id);
     if (!url && row.has_logo) this.wantLogo(row.id);
     const inner = url ? `<img src="${url}" alt="">` : escapeHTML(monogram(row.display));
