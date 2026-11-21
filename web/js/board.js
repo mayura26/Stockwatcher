@@ -55,15 +55,15 @@ class SwBoard extends HTMLElement {
     this.innerHTML = `
       <header class="top">
         <div class="top-line">
+          <button type="button" class="back-icon" data-act="back" aria-label="Back" hidden>${svg('<path d="M10.2 2.8 5 8l5.2 5.2"></path>')}</button>
           <div class="brand">Stockwatcher</div>
           <div class="top-actions">
-            <button type="button" class="bar-btn" data-act="edit" aria-pressed="false">Edit</button>
-            <button type="button" class="bar-btn" data-act="alerts">Alerts</button>
+            <button type="button" class="text-btn" data-act="edit" aria-pressed="false">Edit</button>
+            <button type="button" class="text-btn" data-act="alerts">Alerts</button>
           </div>
         </div>
-        <div class="specials" role="tablist"></div>
+        <div class="groups" role="tablist"></div>
       </header>
-      <div class="groups" role="tablist"></div>
       <div class="board">
         <div class="edit-slot"></div>
         <div class="cols"></div>
@@ -117,8 +117,7 @@ class SwBoard extends HTMLElement {
       ? null
       : groups.find((g) => g.id === groupId) || groups.find((g) => !g.synthetic) || null;
     this.group = group;
-    this.renderSpecials(board);
-    this.renderGroups(board);
+    this.renderLists(board);
     this.renderEdit(group);
     this.renderBody();
     const alerts = this.querySelector('[data-act="alerts"]');
@@ -130,21 +129,17 @@ class SwBoard extends HTMLElement {
     window.scrollTo(0, y);
   }
 
-  renderSpecials(board) {
-    const host = this.querySelector('.specials');
-    const items = [{ id: 'all', name: 'All' }];
+  renderLists(board) {
+    const host = this.querySelector('.groups');
+    const specials = [{ id: 'all', name: 'All' }];
     for (const group of board?.groups || []) {
-      if (group.kind === 'notable' || group.kind === 'owned') items.push({ id: String(group.id), name: group.name });
+      if (group.kind === 'notable' || group.kind === 'owned') specials.push({ id: String(group.id), name: group.name });
     }
     const current = String(this.groupId);
-    host.innerHTML = items.map((item) => {
+    const specialHTML = specials.map((item) => {
       const on = current === item.id;
-      return `<button type="button" class="text-btn${on ? ' is-on' : ''}" role="tab" data-view="${item.id}" aria-selected="${on}">${escapeHTML(item.name)}</button>`;
+      return `<button type="button" class="chip${on ? ' is-on' : ''}" role="tab" data-view="${item.id}" aria-selected="${on}" style="--chip:var(--brass)">${escapeHTML(item.name)}</button>`;
     }).join('');
-  }
-
-  renderGroups(board) {
-    const host = this.querySelector('.groups');
     const groups = (board?.groups || []).filter((g) => !g.synthetic);
     const chips = groups.map((g) => {
       const on = g.id === this.group?.id;
@@ -152,7 +147,7 @@ class SwBoard extends HTMLElement {
       return `<button type="button" class="chip${on ? ' is-on' : ''}" role="tab" data-group="${g.id}" aria-selected="${on}" style="--chip:${color}"><span class="chip-icon">${iconSVG(g.icon)}</span><span class="chip-name">${escapeHTML(g.name)}</span></button>`;
     }).join('');
     const add = '<button type="button" class="chip chip-add" data-act="new-group" aria-label="New group">+</button>';
-    host.innerHTML = chips + add;
+    host.innerHTML = specialHTML + '<span class="list-rule" aria-hidden="true"></span>' + chips + add;
   }
 
   renderEdit(group) {

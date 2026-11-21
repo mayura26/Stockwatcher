@@ -40,9 +40,8 @@ class SwChart extends HTMLElement {
     this.applyingWindow = false;
     this.innerHTML = `
       <div class="chart-screen">
-        <header class="top">
-          <button type="button" class="back" data-back>Back</button>
-          <div>
+        <div class="chart-id">
+          <div class="ident">
             <div class="sym"><span data-display></span><span class="yahoo-mark" data-yahoo hidden>Yahoo</span></div>
             <div class="sub" data-name></div>
           </div>
@@ -54,7 +53,7 @@ class SwChart extends HTMLElement {
               <span class="chg-h" data-span></span>
             </div>
           </div>
-        </header>
+        </div>
         <div class="toggles">
           <div class="seg" role="group" aria-label="Chart style">
             <button type="button" data-kind="line">Line</button>
@@ -85,9 +84,6 @@ class SwChart extends HTMLElement {
         </form>
         <ul class="alert-mini" data-alerts></ul>
       </div>`;
-    this.querySelector('[data-back]').addEventListener('click', () => {
-      location.hash = '#/';
-    });
     this.querySelector('form').addEventListener('submit', (event) => {
       event.preventDefault();
       const level = Number(new FormData(event.target).get('level'));

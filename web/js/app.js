@@ -159,8 +159,8 @@ class SwApp extends HTMLElement {
       this.alerts = data.alerts || [];
     }
     if (!this.shell) return;
-    if (route.name === 'board') this.paintBoard();
-    else if (route.name === 'chart') {
+    if (route.name === 'board' || route.name === 'chart') this.paintBoard();
+    if (route.name === 'chart') {
       this.querySelector('sw-chart').setLive(findRow(board, route.id));
       if (this.querySelector('sw-chart').symbolId === route.id) this.querySelector('sw-chart').loadAlerts();
     } else if (route.name === 'alerts') {
@@ -190,13 +190,17 @@ class SwApp extends HTMLElement {
     const chart = this.querySelector('sw-chart');
     const alerts = this.querySelector('sw-alerts');
     const search = this.querySelector('sw-search');
-    board.hidden = route.name !== 'board';
+    board.hidden = route.name === 'alerts';
+    if (route.name === 'chart') board.dataset.mode = 'chart';
+    else delete board.dataset.mode;
+    const back = board.querySelector('[data-act="back"]');
+    if (back) back.hidden = route.name !== 'chart';
     chart.hidden = route.name !== 'chart';
     alerts.hidden = route.name !== 'alerts';
     search.hidden = !(route.name === 'board' && this.searchOpen);
     this.toggleBanner();
     if (route.name !== 'chart') chart.close();
-    if (route.name === 'board') this.paintBoard();
+    if (route.name === 'board' || route.name === 'chart') this.paintBoard();
     if (route.name === 'chart') chart.open(route.id);
     if (route.name === 'alerts') {
       alerts.api = this.api;
@@ -259,6 +263,9 @@ class SwApp extends HTMLElement {
       case 'open':
         location.hash = '#/chart/' + detail.id;
         return;
+      case 'back':
+        location.hash = '#/';
+        return;
       case 'edit':
         this.editing = !this.editing;
         this.paintBoard();
@@ -277,6 +284,10 @@ class SwApp extends HTMLElement {
       }
       case 'group':
         localStorage.setItem(GROUP_KEY, String(detail.id));
+        if (parseRoute().name === 'chart') {
+          location.hash = '#/';
+          return;
+        }
         this.paintBoard();
         return;
       case 'rename-group':
