@@ -164,8 +164,15 @@ class SwApp extends HTMLElement {
       this.querySelector('sw-chart').setLive(findRow(board, route.id));
       if (this.querySelector('sw-chart').symbolId === route.id) this.querySelector('sw-chart').loadAlerts();
     } else if (route.name === 'alerts') {
-      this.querySelector('sw-alerts').setAlerts(this.alerts);
+      this.paintAlerts();
     }
+  }
+
+  paintAlerts() {
+    const alerts = this.querySelector('sw-alerts');
+    if (!alerts) return;
+    alerts.setSymbols(boardSymbols(this.board));
+    alerts.setAlerts(this.alerts);
   }
 
   paintBoard() {
@@ -204,10 +211,10 @@ class SwApp extends HTMLElement {
     if (route.name === 'chart') chart.open(route.id);
     if (route.name === 'alerts') {
       alerts.api = this.api;
-      alerts.setAlerts(this.alerts);
+      this.paintAlerts();
       if (!this.alerts.length) this.api.get('/api/alerts').then((data) => {
         this.alerts = data.alerts || [];
-        alerts.setAlerts(this.alerts);
+        this.paintAlerts();
       }).catch((err) => this.fail(err));
     }
     if (this.searchOpen && route.name === 'board') search.open();
@@ -383,6 +390,13 @@ class SwApp extends HTMLElement {
         await this.querySelector('sw-chart').loadAlerts();
         await this.refreshData();
         return;
+      case 'set-bracket':
+        await this.api.post('/api/alerts/bracket', {
+          symbol_id: detail.symbolId,
+          percent: detail.percent,
+        });
+        await this.afterAlertChange();
+        return;
       case 'delete-alert':
         await this.api.del('/api/alerts/' + detail.id);
         await this.afterAlertChange();
@@ -402,10 +416,22 @@ class SwApp extends HTMLElement {
     const data = await this.api.get('/api/alerts');
     this.alerts = data.alerts || [];
     const route = parseRoute();
-    if (route.name === 'alerts') this.querySelector('sw-alerts').setAlerts(this.alerts);
+    if (route.name === 'alerts') this.paintAlerts();
     if (route.name === 'chart') await this.querySelector('sw-chart').loadAlerts();
     await this.refreshData();
   }
+}
+
+function boardSymbols(board) {
+  const byId = new Map();
+  for (const group of board?.groups || []) {
+    for (const row of group.rows || []) {
+      if (row.id == null) continue;
+      const existing = byId.get(row.id);
+      if (!existing || (existing.price == null && row.price != null)) byId.set(row.id, row);
+    }
+  }
+  return [...byId.values()].sort((a, b) => String(a.display).localeCompare(String(b.display)));
 }
 
 function escapeHTML(s) {

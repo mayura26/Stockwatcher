@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"stockwatcher/internal/alerts"
 	"stockwatcher/internal/config"
 	"stockwatcher/internal/market"
 	"stockwatcher/internal/market/finnhub"
@@ -55,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/bars", s.auth(s.bars))
 	mux.HandleFunc("GET /api/alerts", s.auth(s.listAlerts))
 	mux.HandleFunc("POST /api/alerts", s.auth(s.createAlert))
+	mux.HandleFunc("POST /api/alerts/bracket", s.auth(s.createBracket))
 	mux.HandleFunc("DELETE /api/alerts/{id}", s.auth(s.deleteAlert))
 	mux.HandleFunc("POST /api/alerts/{id}/rearm", s.auth(s.rearmAlert))
 	mux.HandleFunc("GET /api/push/key", s.auth(s.pushKey))
@@ -516,6 +518,32 @@ func (s *Server) createAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, a)
+}
+
+func (s *Server) createBracket(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SymbolID int64   `json:"symbol_id"`
+		Percent  float64 `json:"percent"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	pair, err := s.Store.CreateBracket(r.Context(), body.SymbolID, body.Percent)
+	switch {
+	case errors.Is(err, alerts.ErrBadPercent):
+		writeErr(w, http.StatusBadRequest, "percent must be greater than 0 and less than 100")
+		return
+	case errors.Is(err, alerts.ErrBadPrice), errors.Is(err, store.ErrNoQuote):
+		writeErr(w, http.StatusBadRequest, "no price for this stock yet")
+		return
+	case errors.Is(err, alerts.ErrTight):
+		writeErr(w, http.StatusBadRequest, "percent is too small for this price")
+		return
+	}
+	if mapErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"alerts": pair})
 }
 
 func (s *Server) deleteAlert(w http.ResponseWriter, r *http.Request) {

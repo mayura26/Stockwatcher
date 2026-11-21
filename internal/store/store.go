@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"stockwatcher/internal/alerts"
 	"stockwatcher/internal/market"
 
 	_ "modernc.org/sqlite"
@@ -21,6 +22,7 @@ var (
 	ErrNotFound   = errors.New("not found")
 	ErrLastGroup  = errors.New("last group")
 	ErrBadReorder = errors.New("bad reorder")
+	ErrNoQuote    = errors.New("no quote")
 )
 
 // Store is the SQLite cache the UI reads. Providers never sit on the request path
@@ -134,6 +136,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   direction TEXT NOT NULL CHECK (direction IN ('above','below')),
   level REAL NOT NULL,
   repeat TEXT NOT NULL DEFAULT 'once' CHECK (repeat IN ('once','continuous')),
+  bracket_id INTEGER,
   status TEXT NOT NULL DEFAULT 'armed' CHECK (status IN ('armed','triggered')),
   last_price REAL,
   triggered_at INTEGER,
@@ -157,6 +160,9 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 		return err
 	}
 	if err := s.ensureAlertRepeat(); err != nil {
+		return err
+	}
+	if err := s.ensureAlertBracket(); err != nil {
 		return err
 	}
 	if err := s.ensureGroupAppearance(); err != nil {
@@ -285,6 +291,36 @@ func (s *Store) ensureAlertRepeat() error {
 		return nil
 	}
 	_, err = s.db.Exec(`ALTER TABLE alerts ADD COLUMN repeat TEXT NOT NULL DEFAULT 'once' CHECK (repeat IN ('once','continuous'))`)
+	return err
+}
+
+// ensureAlertBracket links the two legs of a percent bracket on databases
+// created before that column existed.
+func (s *Store) ensureAlertBracket() error {
+	rows, err := s.db.Query(`PRAGMA table_info(alerts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "bracket_id" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE alerts ADD COLUMN bracket_id INTEGER`)
 	return err
 }
 
@@ -1700,6 +1736,7 @@ type Alert struct {
 	Direction   string   `json:"direction"`
 	Level       float64  `json:"level"`
 	Repeat      string   `json:"repeat"`
+	BracketID   *int64   `json:"bracket_id"`
 	Status      string   `json:"status"`
 	LastPrice   *float64 `json:"last_price"`
 	TriggeredAt *int64   `json:"triggered_at"`
@@ -1710,7 +1747,7 @@ type Alert struct {
 func (s *Store) ListAlerts(ctx context.Context) ([]Alert, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT a.id, a.symbol_id, s.display, s.name, s.asset_class, a.direction, a.level, a.repeat, a.status,
-       a.last_price, a.triggered_at, a.created_at, q.price
+       a.last_price, a.triggered_at, a.created_at, q.price, a.bracket_id
 FROM alerts a
 JOIN symbols s ON s.id = a.symbol_id
 LEFT JOIN quotes q ON q.symbol_id = s.id
@@ -1737,21 +1774,22 @@ type scanner interface {
 func scanAlert(sc scanner) (Alert, error) {
 	var a Alert
 	var last, price sql.NullFloat64
-	var triggered sql.NullInt64
-	err := sc.Scan(&a.ID, &a.SymbolID, &a.Display, &a.Name, &a.AssetClass, &a.Direction, &a.Level, &a.Repeat, &a.Status, &last, &triggered, &a.CreatedAt, &price)
+	var triggered, bracket sql.NullInt64
+	err := sc.Scan(&a.ID, &a.SymbolID, &a.Display, &a.Name, &a.AssetClass, &a.Direction, &a.Level, &a.Repeat, &a.Status, &last, &triggered, &a.CreatedAt, &price, &bracket)
 	if err != nil {
 		return Alert{}, err
 	}
 	a.LastPrice = floatPtr(last)
 	a.TriggeredAt = intPtr(triggered)
 	a.Price = floatPtr(price)
+	a.BracketID = intPtr(bracket)
 	return a, nil
 }
 
 func (s *Store) Alert(ctx context.Context, id int64) (Alert, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT a.id, a.symbol_id, s.display, s.name, s.asset_class, a.direction, a.level, a.repeat, a.status,
-       a.last_price, a.triggered_at, a.created_at, q.price
+       a.last_price, a.triggered_at, a.created_at, q.price, a.bracket_id
 FROM alerts a
 JOIN symbols s ON s.id = a.symbol_id
 LEFT JOIN quotes q ON q.symbol_id = s.id
@@ -1787,8 +1825,82 @@ func (s *Store) CreateAlert(ctx context.Context, symbolID int64, direction, repe
 	return s.Alert(ctx, id)
 }
 
+// CreateBracket arms two one-off alerts, up and down, around the current quote.
+// Both rows share the first row's id as bracket_id.
+func (s *Store) CreateBracket(ctx context.Context, symbolID int64, percent float64) ([]Alert, error) {
+	if _, err := s.Symbol(ctx, symbolID); err != nil {
+		return nil, err
+	}
+	q, err := s.Quote(ctx, symbolID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrNoQuote
+	}
+	if err != nil {
+		return nil, err
+	}
+	above, below, err := alerts.BracketLevels(q.Price, percent)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	upRes, err := tx.ExecContext(ctx, `INSERT INTO alerts(symbol_id, direction, level, repeat, status, last_price, created_at) VALUES (?, 'above', ?, 'once', 'armed', ?, ?)`, symbolID, above, q.Price, now)
+	if err != nil {
+		return nil, err
+	}
+	upID, err := upRes.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	downRes, err := tx.ExecContext(ctx, `INSERT INTO alerts(symbol_id, direction, level, repeat, bracket_id, status, last_price, created_at) VALUES (?, 'below', ?, 'once', ?, 'armed', ?, ?)`, symbolID, below, upID, q.Price, now)
+	if err != nil {
+		return nil, err
+	}
+	downID, err := downRes.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE alerts SET bracket_id = ? WHERE id = ?`, upID, upID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	up, err := s.Alert(ctx, upID)
+	if err != nil {
+		return nil, err
+	}
+	down, err := s.Alert(ctx, downID)
+	if err != nil {
+		return nil, err
+	}
+	return []Alert{up, down}, nil
+}
+
 func (s *Store) DeleteAlert(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM alerts WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var bracket sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT bracket_id FROM alerts WHERE id = ?`, id).Scan(&bracket)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if bracket.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE alerts SET bracket_id = NULL WHERE bracket_id = ? AND id != ?`, bracket.Int64, id); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM alerts WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -1799,7 +1911,22 @@ func (s *Store) DeleteAlert(ctx context.Context, id int64) error {
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit()
+}
+
+// CancelBracketMate removes the other armed leg after one side has fired.
+// The fired row stays. A lone alert is left alone.
+func (s *Store) CancelBracketMate(ctx context.Context, id int64) error {
+	var bracket sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT bracket_id FROM alerts WHERE id = ?`, id).Scan(&bracket)
+	if errors.Is(err, sql.ErrNoRows) || !bracket.Valid {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM alerts WHERE bracket_id = ? AND id != ? AND status = 'armed'`, bracket.Int64, id)
+	return err
 }
 
 func (s *Store) RearmAlert(ctx context.Context, id int64) (Alert, error) {

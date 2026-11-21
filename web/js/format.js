@@ -79,6 +79,11 @@ export function repeatLabel(repeat) {
   return repeat === 'continuous' ? 'continuous' : 'once';
 }
 
+export function alertDetail(alert) {
+  const kind = alert.bracket_id ? 'bracket · ' : '';
+  return kind + repeatLabel(alert.repeat) + ' · ' + alert.status;
+}
+
 export function priceFormat(price) {
   const abs = Math.abs(Number(price) || 0);
   let precision = 2;

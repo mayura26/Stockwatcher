@@ -754,6 +754,11 @@ func (s *Syncer) evalAlerts(ctx context.Context, quotes map[int64]market.Quote) 
 		if !fired {
 			continue
 		}
+		if a.Repeat != "continuous" {
+			if err := s.Store.CancelBracketMate(ctx, a.ID); err != nil {
+				return pushed, err
+			}
+		}
 		title := fmt.Sprintf("%s crossed %s %s", a.Display, alerts.CrossPhrase(a.Direction), market.FormatNumber(a.Level))
 		body := "Last " + market.FormatNumber(q.Price)
 		if a.Name != "" && !strings.EqualFold(a.Name, a.Display) {

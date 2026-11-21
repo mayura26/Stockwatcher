@@ -1,6 +1,10 @@
 package alerts
 
-import "testing"
+import (
+	"errors"
+	"math"
+	"testing"
+)
 
 func TestCrossed(t *testing.T) {
 	tests := []struct {
@@ -34,6 +38,37 @@ func TestCrossPhrase(t *testing.T) {
 	if CrossPhrase("above") != "up" || CrossPhrase("below") != "down" || CrossPhrase("sideways") != "" {
 		t.Fatalf("up %q down %q other %q", CrossPhrase("above"), CrossPhrase("below"), CrossPhrase("sideways"))
 	}
+}
+
+func TestBracketLevels(t *testing.T) {
+	up, down, err := BracketLevels(100, 10)
+	if err != nil || up != 110 || down != 90 {
+		t.Fatalf("up %v down %v err %v", up, down, err)
+	}
+	up, down, err = BracketLevels(0.005, 10)
+	if err != nil || !near(up, 0.0055) || !near(down, 0.0045) {
+		t.Fatalf("small up %v down %v err %v", up, down, err)
+	}
+	up, down, err = BracketLevels(1.25, 10)
+	if err != nil || !near(up, 1.38) || !near(down, 1.13) {
+		t.Fatalf("round up %v down %v err %v", up, down, err)
+	}
+	if _, _, err := BracketLevels(100, 0); !errors.Is(err, ErrBadPercent) {
+		t.Fatalf("zero percent %v", err)
+	}
+	if _, _, err := BracketLevels(100, 100); !errors.Is(err, ErrBadPercent) {
+		t.Fatalf("full percent %v", err)
+	}
+	if _, _, err := BracketLevels(0, 10); !errors.Is(err, ErrBadPrice) {
+		t.Fatalf("zero price %v", err)
+	}
+	if _, _, err := BracketLevels(100, 0.001); !errors.Is(err, ErrTight) {
+		t.Fatalf("tight %v", err)
+	}
+}
+
+func near(a, b float64) bool {
+	return math.Abs(a-b) < 1e-9
 }
 
 func TestEvaluateFirstObservationSilent(t *testing.T) {

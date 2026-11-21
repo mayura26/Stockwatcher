@@ -1,4 +1,4 @@
-import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, repeatLabel, yahooQuoted } from './format.js';
+import { alertDetail, crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, yahooQuoted } from './format.js';
 
 const RANGE_KEY = 'sw.range';
 const RANGES = ['D', '3D', '1W', '1M', '3M', '6M', 'YTD', '1Y', '5Y'];
@@ -82,6 +82,10 @@ class SwChart extends HTMLElement {
           </div>
           <button type="submit" class="text-btn">Set</button>
         </form>
+        <form class="alert-form bracket-form" data-bracket>
+          <input name="percent" inputmode="decimal" placeholder="%" aria-label="Bracket percent">
+          <button type="submit" class="text-btn">Bracket</button>
+        </form>
         <ul class="alert-mini" data-alerts></ul>
       </div>`;
     this.querySelector('form').addEventListener('submit', (event) => {
@@ -98,6 +102,20 @@ class SwChart extends HTMLElement {
       event.target.reset();
       this.previewPrice = null;
       this.syncPreviewLine();
+    });
+    this.querySelector('[data-bracket]').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const percent = Number(new FormData(event.target).get('percent'));
+      if (!(percent > 0) || percent >= 100) {
+        this.setMsg('Enter a percent between 0 and 100.');
+        return;
+      }
+      this.setMsg('');
+      this.dispatchEvent(new CustomEvent('sw-action', {
+        bubbles: true,
+        detail: { type: 'set-bracket', symbolId: this.symbolId, percent },
+      }));
+      event.target.reset();
     });
     this.querySelector('input[name="level"]').addEventListener('input', (event) => {
       const level = Number(event.target.value);
@@ -149,6 +167,8 @@ class SwChart extends HTMLElement {
       this.mine = [];
       const level = this.querySelector('input[name="level"]');
       if (level) level.value = '';
+      const percent = this.querySelector('[data-bracket] input');
+      if (percent) percent.value = '';
       this.destroyChart();
       this.chartIntra = false;
       this.userRanged = false;
@@ -234,7 +254,7 @@ class SwChart extends HTMLElement {
       const host = this.querySelector('[data-alerts]');
       host.innerHTML = this.mine.map((a) => `
         <li>
-          <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${repeatLabel(a.repeat)} · ${a.status}</span></span>
+          <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${alertDetail(a)}</span></span>
           <span>
             ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
             <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>

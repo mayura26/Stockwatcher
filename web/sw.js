@@ -1,4 +1,4 @@
-const CACHE = 'stockwatcher-v5';
+const CACHE = 'stockwatcher-v6';
 const SHELL = [
   '/',
   '/css/app.css',

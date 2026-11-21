@@ -1,4 +1,4 @@
-import { crossLabel, formatPrice, repeatLabel } from './format.js';
+import { alertDetail, crossLabel, formatPrice } from './format.js';
 
 class SwAlerts extends HTMLElement {
   connectedCallback() {
@@ -19,10 +19,27 @@ class SwAlerts extends HTMLElement {
             <span class="sub" data-push-state></span>
           </div>
           <p class="note">On iPhone, add Stockwatcher to the Home Screen first. Push needs iOS 16.4 or later, and the watcher only runs while the server’s scheduled task is on.</p>
+          <form class="bracket-form">
+            <select name="symbol" aria-label="Stock"></select>
+            <input name="percent" inputmode="decimal" placeholder="%" aria-label="Bracket percent">
+            <button type="submit" class="text-btn">Bracket</button>
+          </form>
           <ul class="alert-list" data-list></ul>
         </div>
       </div>`;
     this.querySelector('[data-back]').addEventListener('click', () => { location.hash = '#/'; });
+    this.querySelector('.bracket-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const percent = Number(new FormData(event.target).get('percent'));
+      const symbolId = Number(new FormData(event.target).get('symbol'));
+      if (!symbolId) return;
+      if (!(percent > 0) || percent >= 100) {
+        this.emit({ type: 'error', message: 'Enter a percent between 0 and 100.' });
+        return;
+      }
+      this.emit({ type: 'set-bracket', symbolId, percent });
+      event.target.querySelector('[name="percent"]').value = '';
+    });
     this.querySelector('[data-push]').addEventListener('click', () => this.enable());
     this.querySelector('[data-test]').addEventListener('click', () => this.testPush());
     this.querySelector('[data-list]').addEventListener('toggle', (event) => {
@@ -38,6 +55,29 @@ class SwAlerts extends HTMLElement {
       const del = event.target.closest('[data-delete-alert]');
       if (del) this.emit({ type: 'delete-alert', id: Number(del.dataset.deleteAlert) });
     });
+  }
+
+  setSymbols(symbols) {
+    const next = symbols || [];
+    const select = this.querySelector('[name="symbol"]');
+    if (!select) return;
+    const current = select.value;
+    const prev = this.symbols || [];
+    const same = prev.length === next.length && prev.every((row, i) => row.id === next[i].id && row.display === next[i].display && row.price === next[i].price);
+    this.symbols = next;
+    if (same && select.options.length) return;
+    if (!next.length) {
+      select.innerHTML = '<option value="">No stocks</option>';
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    select.innerHTML = next.map((row) => `<option value="${Number(row.id)}"></option>`).join('');
+    next.forEach((row, i) => {
+      const price = row.price == null ? '' : ' · ' + formatPrice(row.price);
+      select.options[i].textContent = row.display + price;
+    });
+    if (current && next.some((row) => String(row.id) === current)) select.value = current;
   }
 
   setAlerts(alerts) {
@@ -70,7 +110,7 @@ class SwAlerts extends HTMLElement {
           <ul class="alert-rows">
             ${group.alerts.map((a) => `
               <li>
-                <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${repeatLabel(a.repeat)} · ${escapeHTML(a.status)}</span></span>
+                <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${escapeHTML(alertDetail(a))}</span></span>
                 <span>
                   ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
                   <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>

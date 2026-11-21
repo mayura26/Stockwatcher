@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"stockwatcher/internal/alerts"
 	"stockwatcher/internal/market"
 )
 
@@ -395,7 +397,7 @@ INSERT INTO alerts(symbol_id, direction, level, status, last_price, created_at) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if legacy.Repeat != "once" || legacy.Status != "armed" {
+	if legacy.Repeat != "once" || legacy.Status != "armed" || legacy.BracketID != nil {
 		t.Fatalf("migrated %+v", legacy)
 	}
 
@@ -424,6 +426,77 @@ INSERT INTO alerts(symbol_id, direction, level, status, last_price, created_at) 
 	ok, err = st.NoteContinuousFire(ctx, once.ID, 8, 100)
 	if err != nil || ok {
 		t.Fatal("once alert should not take a continuous fire", err, ok)
+	}
+}
+
+func TestBracketCancelsMate(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	board, err := st.Board(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := groupNamed(t, board, "Watch").ID
+	sym, _, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Stock, Display: "AAPL", ProviderSymbol: "AAPL", Name: "Apple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertQuote(ctx, sym.ID, 100, nil, nil, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	pair, err := st.CreateBracket(ctx, sym.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pair) != 2 || pair[0].Direction != "above" || pair[0].Level != 110 || pair[1].Direction != "below" || pair[1].Level != 90 {
+		t.Fatalf("%+v", pair)
+	}
+	if pair[0].Repeat != "once" || pair[1].Repeat != "once" || pair[0].Status != "armed" || pair[1].Status != "armed" {
+		t.Fatalf("legs %+v %+v", pair[0], pair[1])
+	}
+	if pair[0].BracketID == nil || pair[1].BracketID == nil || *pair[0].BracketID != pair[0].ID || *pair[1].BracketID != pair[0].ID {
+		t.Fatalf("link %+v %+v", pair[0].BracketID, pair[1].BracketID)
+	}
+	ok, err := st.TriggerAlert(ctx, pair[0].ID, 111, 50)
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	if err := st.CancelBracketMate(ctx, pair[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Alert(ctx, pair[1].ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("mate %v", err)
+	}
+	fired, err := st.Alert(ctx, pair[0].ID)
+	if err != nil || fired.Status != "triggered" {
+		t.Fatalf("%+v %v", fired, err)
+	}
+
+	pair, err = st.CreateBracket(ctx, sym.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteAlert(ctx, pair[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := st.Alert(ctx, pair[1].ID)
+	if err != nil || kept.BracketID != nil || kept.Status != "armed" || kept.Direction != "below" {
+		t.Fatalf("%+v %v", kept, err)
+	}
+
+	other, _, err := st.AddToGroup(ctx, gid, NewSymbol{AssetClass: market.Stock, Display: "MSFT", ProviderSymbol: "MSFT", Name: "Microsoft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateBracket(ctx, other.ID, 10); !errors.Is(err, ErrNoQuote) {
+		t.Fatalf("quote %v", err)
+	}
+	if _, err := st.CreateBracket(ctx, sym.ID, 0); !errors.Is(err, alerts.ErrBadPercent) {
+		t.Fatalf("percent %v", err)
 	}
 }
 
