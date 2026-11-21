@@ -51,6 +51,17 @@ func TestParseIntraday(t *testing.T) {
 	}
 }
 
+func TestParseOHLC(t *testing.T) {
+	raw := []byte(`[[1700000000000,"9","12","8","10","1",1700000299999]]`)
+	bars, err := ParseOHLC(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 1 || bars[0].OpenUnix != 1700000000 || bars[0].Open != 9 || bars[0].High != 12 || bars[0].Low != 8 || bars[0].Close != 10 {
+		t.Fatalf("%+v", bars)
+	}
+}
+
 func TestParseExchangeInfoAndSearch(t *testing.T) {
 	raw := []byte(`{"symbols":[
 		{"symbol":"BTCUSDT","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","isSpotTradingAllowed":true},

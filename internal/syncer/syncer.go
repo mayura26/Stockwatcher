@@ -137,6 +137,50 @@ func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *
 	q.IntradaySet = true
 }
 
+// Candles loads 5m, 1H, or 4H bars for a chart. They are not stored.
+func (s *Syncer) Candles(ctx context.Context, class, provider, resolution string) ([]market.Candle, error) {
+	now := s.now()
+	switch class {
+	case market.Stock, market.Future:
+		if s.Yahoo == nil {
+			return nil, fmt.Errorf("yahoo unavailable")
+		}
+		interval, rng := "5m", "60d"
+		if resolution != "5m" {
+			interval, rng = "60m", "2y"
+		}
+		bars, err := s.Yahoo.Candles(ctx, provider, interval, rng)
+		if err != nil {
+			return nil, err
+		}
+		if resolution == "4H" {
+			return market.Fold4H(bars), nil
+		}
+		return market.ToCandles(bars), nil
+	case market.Crypto:
+		if s.Binance == nil {
+			return nil, fmt.Errorf("binance unavailable")
+		}
+		interval := "5m"
+		since := now.AddDate(0, 0, -60)
+		switch resolution {
+		case "1H":
+			interval = "1h"
+			since = now.AddDate(-2, 0, 0)
+		case "4H":
+			interval = "4h"
+			since = now.AddDate(-2, 0, 0)
+		}
+		bars, err := s.Binance.Candles(ctx, provider, interval, since)
+		if err != nil {
+			return nil, err
+		}
+		return market.ToCandles(bars), nil
+	default:
+		return nil, fmt.Errorf("unknown asset class %s", class)
+	}
+}
+
 // Backfill loads about five years of daily bars. Concurrent callers share one fetch.
 func (s *Syncer) Backfill(ctx context.Context, id int64) error {
 	s.mu.Lock()
@@ -391,16 +435,18 @@ func (s *Syncer) writeQuote(ctx context.Context, class string, id int64, q marke
 		asOf = s.now()
 	}
 	var h1, h4 *float64
+	var spark []float64
 	if q.IntradaySet {
 		h1 = market.LookbackPct(q.Price, q.Intraday, asOf, time.Hour)
 		h4 = market.LookbackPct(q.Price, q.Intraday, asOf, 4*time.Hour)
+		spark = market.SessionCloses(class, q.Intraday, asOf)
 	}
 	var prev *float64
 	if q.PrevClose > 0 {
 		v := q.PrevClose
 		prev = &v
 	}
-	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, h1, h4, asOf.Unix(), q.IntradaySet)
+	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, h1, h4, spark, asOf.Unix(), q.IntradaySet)
 }
 
 func (s *Syncer) evalAlerts(ctx context.Context, quotes map[int64]market.Quote) (int, error) {

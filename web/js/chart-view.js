@@ -1,4 +1,4 @@
-import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, repeatLabel } from './format.js';
+import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, repeatLabel } from './format.js';
 
 let chartsPromise;
 
@@ -44,7 +44,10 @@ class SwChart extends HTMLElement {
             <button type="button" data-kind="line">Line</button>
             <button type="button" data-kind="candle" aria-pressed="true">Candle</button>
           </div>
-          <div class="seg" role="group" aria-label="Resolution">
+          <div class="seg res" role="group" aria-label="Resolution">
+            <button type="button" data-res="5m">5m</button>
+            <button type="button" data-res="1H">1H</button>
+            <button type="button" data-res="4H">4H</button>
             <button type="button" data-res="D" aria-pressed="true">D</button>
             <button type="button" data-res="W">W</button>
             <button type="button" data-res="M">M</button>
@@ -133,6 +136,7 @@ class SwChart extends HTMLElement {
       const level = this.querySelector('input[name="level"]');
       if (level) level.value = '';
       this.destroyChart();
+      this.chartIntra = false;
       this.syncPressed();
     }
     if (!this.payload || this.payload.resolution !== this.resolution) await this.loadBars();
@@ -152,6 +156,9 @@ class SwChart extends HTMLElement {
     this.setMsg('Loading history…');
     try {
       this.payload = await this.api.get('/api/bars?id=' + this.symbolId + '&resolution=' + this.resolution);
+      const intra = intradayRes(this.resolution);
+      if (this.chart && this.chartIntra !== intra) this.destroyChart();
+      this.chartIntra = intra;
       this.applyHeader();
       this.setMsg(this.payload.bars?.length ? '' : 'No history yet.');
       await this.paint();
@@ -168,7 +175,9 @@ class SwChart extends HTMLElement {
     const shown = price ?? (bars.length ? bars[bars.length - 1].close : null);
     this.querySelector('[data-display]').textContent = sym.display || '';
     this.querySelector('[data-name]').textContent = sym.name || '';
-    this.querySelector('[data-price]').textContent = formatPrice(shown);
+    const px = this.querySelector('[data-price]');
+    px.textContent = formatPrice(shown);
+    px.className = 'px num ' + priceTone(change);
     const ch = this.querySelector('[data-change]');
     ch.textContent = formatPct(change);
     ch.className = 'chg ' + pctClass(change);
@@ -228,7 +237,7 @@ class SwChart extends HTMLElement {
           horzLines: { color: 'rgba(232,224,204,0.06)' },
         },
         rightPriceScale: { borderColor: 'rgba(232,224,204,0.12)' },
-        timeScale: { borderColor: 'rgba(232,224,204,0.12)', fixLeftEdge: true, fixRightEdge: true },
+        timeScale: { borderColor: 'rgba(232,224,204,0.12)', rightOffset: 2, fixRightEdge: true },
         crosshair: {
           vertLine: { color: 'rgba(198,161,91,0.5)', labelBackgroundColor: '#1c1f17' },
           horzLine: { color: 'rgba(198,161,91,0.5)', labelBackgroundColor: '#1c1f17' },
@@ -274,7 +283,7 @@ class SwChart extends HTMLElement {
       });
       this.series.setData(bars);
     }
-    this.chart.timeScale().fitContent();
+    showWindow(this.chart, bars, this.resolution, this.payload?.symbol?.asset_class);
     this.drawAlertLines();
     this.syncPreviewLine();
   }
@@ -358,6 +367,62 @@ class SwChart extends HTMLElement {
   }
 
   disconnectedCallback() { this.destroyChart(); }
+}
+
+function intradayRes(res) {
+  return res === '5m' || res === '1H' || res === '4H';
+}
+
+// Days of history shown when a resolution opens. Older bars stay loaded and can be scrolled in.
+const WINDOW_DAYS = { '5m': 1, '1H': 7, '4H': 31, D: 365, W: 365 * 5, M: 365 * 10 };
+
+function showWindow(chart, bars, resolution, assetClass) {
+  const width = chart.timeScale().width();
+  if (!width) {
+    requestAnimationFrame(() => showWindow(chart, bars, resolution, assetClass));
+    return;
+  }
+  const count = Math.min(bars.length, windowCount(bars, resolution, assetClass));
+  const spacing = Math.min(14, Math.max(1, (width - 4) / count));
+  chart.timeScale().applyOptions({ barSpacing: spacing });
+  const last = bars.length - 1;
+  chart.timeScale().setVisibleLogicalRange({ from: last - count + 1, to: last });
+}
+
+function windowCount(bars, resolution, assetClass) {
+  const last = bars[bars.length - 1].time;
+  if (resolution === '5m' && assetClass !== 'crypto' && typeof last === 'number') {
+    const day = nyDay(last);
+    let n = 0;
+    for (let i = bars.length - 1; i >= 0; i--) {
+      if (nyDay(bars[i].time) !== day) break;
+      n++;
+    }
+    return Math.max(n, 1);
+  }
+  const days = WINDOW_DAYS[resolution] || 365;
+  const cutoff = typeof last === 'number' ? last - days * 86400 : shiftDay(last, -days);
+  let n = 0;
+  for (let i = bars.length - 1; i >= 0; i--) {
+    if (bars[i].time < cutoff) break;
+    n++;
+  }
+  return Math.max(n, 1);
+}
+
+function nyDay(unix) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(unix * 1000));
+}
+
+function shiftDay(day, delta) {
+  const t = new Date(day + 'T00:00:00Z');
+  t.setUTCDate(t.getUTCDate() + delta);
+  return t.toISOString().slice(0, 10);
 }
 
 function levelInput(n) {

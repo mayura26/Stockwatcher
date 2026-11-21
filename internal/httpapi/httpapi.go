@@ -312,12 +312,22 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 	if res == "" {
 		res = "D"
 	}
-	if res != "D" && res != "W" && res != "M" {
-		writeErr(w, http.StatusBadRequest, "resolution must be D, W, or M")
+	if res != "5m" && res != "1H" && res != "4H" && res != "D" && res != "W" && res != "M" {
+		writeErr(w, http.StatusBadRequest, "resolution must be 5m, 1H, 4H, D, W, or M")
 		return
 	}
 	sym, err := s.Store.Symbol(r.Context(), id)
 	if mapErr(w, err) {
+		return
+	}
+	if res == "5m" || res == "1H" || res == "4H" {
+		candles, err := s.Sync.Candles(r.Context(), sym.AssetClass, sym.ProviderSymbol, res)
+		if err != nil {
+			slog.Error("intraday chart", "symbol", sym.Display, "resolution", res, "err", err)
+			writeErr(w, http.StatusBadGateway, "history unavailable")
+			return
+		}
+		s.writeBars(w, r, sym, res, candles)
 		return
 	}
 	n, err := s.Store.BarCount(r.Context(), id)
@@ -335,8 +345,12 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 	if mapErr(w, err) {
 		return
 	}
+	s.writeBars(w, r, sym, res, market.Rollup(bars, res))
+}
+
+func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, res string, candles []market.Candle) {
 	var price, changeD *float64
-	if q, err := s.Store.Quote(r.Context(), id); err == nil {
+	if q, err := s.Store.Quote(r.Context(), sym.ID); err == nil {
 		v := q.Price
 		price = &v
 		changeD = q.ChangeD
@@ -351,7 +365,7 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 			"change_d":    changeD,
 		},
 		"resolution": res,
-		"bars":       market.Rollup(bars, res),
+		"bars":       candles,
 	})
 }
 

@@ -103,19 +103,64 @@ func TestRollupWeekAndMonth(t *testing.T) {
 	if len(week) != 3 {
 		t.Fatalf("weeks = %d", len(week))
 	}
-	if week[0].Time != "2024-01-01" || week[0].Open != 1 || week[0].High != 4 || week[0].Low != 0.5 || week[0].Close != 3.2 {
+	if week[0].Time.Day != "2024-01-01" || week[0].Open != 1 || week[0].High != 4 || week[0].Low != 0.5 || week[0].Close != 3.2 {
 		t.Fatalf("first week %+v", week[0])
 	}
-	if week[1].Time != "2024-01-08" || week[1].Close != 5 {
+	if week[1].Time.Day != "2024-01-08" || week[1].Close != 5 {
 		t.Fatalf("second week %+v", week[1])
 	}
 	month := Rollup(bars, "M")
-	if len(month) != 2 || month[0].Time != "2024-01-01" || month[0].Close != 5 || month[1].Time != "2024-02-01" {
+	if len(month) != 2 || month[0].Time.Day != "2024-01-01" || month[0].Close != 5 || month[1].Time.Day != "2024-02-01" {
 		t.Fatalf("months %+v", month)
 	}
 	daily := Rollup(bars, "D")
-	if len(daily) != len(bars) || daily[0].Time != "2024-01-01" {
+	if len(daily) != len(bars) || daily[0].Time.Day != "2024-01-01" {
 		t.Fatalf("daily %+v", daily)
+	}
+}
+
+func TestFold4H(t *testing.T) {
+	bars := []IntradayBar{
+		{OpenUnix: 0, Open: 1, High: 2, Low: 1, Close: 1.5},
+		{OpenUnix: 3600, Open: 1.5, High: 5, Low: 0.5, Close: 3},
+		{OpenUnix: 4 * 3600, Open: 3, High: 4, Low: 2.5, Close: 3.5},
+	}
+	got := Fold4H(bars)
+	if len(got) != 2 {
+		t.Fatalf("%d buckets", len(got))
+	}
+	if got[0].Time.Unix != 0 || got[0].Open != 1 || got[0].High != 5 || got[0].Low != 0.5 || got[0].Close != 3 {
+		t.Fatalf("first %+v", got[0])
+	}
+	if got[1].Time.Unix != 4*3600 || got[1].Close != 3.5 {
+		t.Fatalf("second %+v", got[1])
+	}
+}
+
+func TestSessionClosesWeekendAndCrypto(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		ny = time.FixedZone("EST", -5*3600)
+	}
+	friday := time.Date(2024, 1, 12, 15, 0, 0, 0, ny)
+	thursday := time.Date(2024, 1, 11, 15, 0, 0, 0, ny)
+	saturday := time.Date(2024, 1, 13, 12, 0, 0, 0, ny)
+	got := SessionCloses(Stock, []Point{
+		{Time: thursday, Price: 10},
+		{Time: friday, Price: 12},
+		{Time: friday.Add(time.Hour), Price: 13},
+	}, saturday)
+	if len(got) != 2 || got[0] != 12 || got[1] != 13 {
+		t.Fatalf("friday closes %+v", got)
+	}
+	asOf := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+	crypto := SessionCloses(Crypto, []Point{
+		{Time: asOf.Add(-30 * time.Hour), Price: 1},
+		{Time: asOf.Add(-23 * time.Hour), Price: 2},
+		{Time: asOf, Price: 3},
+	}, asOf)
+	if len(crypto) != 2 || crypto[0] != 2 || crypto[1] != 3 {
+		t.Fatalf("crypto %+v", crypto)
 	}
 }
 

@@ -1,7 +1,9 @@
 package market
 
 import (
+	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,14 +42,40 @@ type Bar struct {
 	Close, Volume   float64
 }
 
-// Candle is a Lightweight Charts business-day bar. Time is the bucket start
-// so the current week or month updates in place.
+// Candle is one Lightweight Charts bar. Time is a business day for D, W, and M,
+// and a unix-second open for 5m, 1H, and 4H.
 type Candle struct {
-	Time  string  `json:"time"`
-	Open  float64 `json:"open"`
-	High  float64 `json:"high"`
-	Low   float64 `json:"low"`
-	Close float64 `json:"close"`
+	Time  CandleTime `json:"time"`
+	Open  float64    `json:"open"`
+	High  float64    `json:"high"`
+	Low   float64    `json:"low"`
+	Close float64    `json:"close"`
+}
+
+// CandleTime marshals as a date string or a unix second, which is what the chart accepts.
+type CandleTime struct {
+	Day  string
+	Unix int64
+}
+
+// DayTime is a business-day chart time.
+func DayTime(day string) CandleTime { return CandleTime{Day: day} }
+
+// UnixTime is an intraday bar open, in seconds.
+func UnixTime(sec int64) CandleTime { return CandleTime{Unix: sec} }
+
+func (t CandleTime) MarshalJSON() ([]byte, error) {
+	if t.Day != "" {
+		return json.Marshal(t.Day)
+	}
+	return json.Marshal(t.Unix)
+}
+
+// IntradayBar is one intraday candle. OpenUnix is the bar open in seconds.
+type IntradayBar struct {
+	OpenUnix        int64
+	Open, High, Low float64
+	Close           float64
 }
 
 // Hit is a search result the client can add to a group.
@@ -146,7 +174,7 @@ func Rollup(bars []Bar, resolution string) []Candle {
 	out := make([]Candle, 0, len(bars))
 	if resolution == "D" {
 		for _, b := range bars {
-			out = append(out, Candle{Time: b.Day, Open: b.Open, High: b.High, Low: b.Low, Close: b.Close})
+			out = append(out, Candle{Time: DayTime(b.Day), Open: b.Open, High: b.High, Low: b.Low, Close: b.Close})
 		}
 		return out
 	}
@@ -156,7 +184,7 @@ func Rollup(bars []Bar, resolution string) []Candle {
 		i, ok := index[key]
 		if !ok {
 			index[key] = len(out)
-			out = append(out, Candle{Time: key, Open: b.Open, High: b.High, Low: b.Low, Close: b.Close})
+			out = append(out, Candle{Time: DayTime(key), Open: b.Open, High: b.High, Low: b.Low, Close: b.Close})
 			continue
 		}
 		c := &out[i]
@@ -167,6 +195,85 @@ func Rollup(bars []Bar, resolution string) []Candle {
 			c.Low = b.Low
 		}
 		c.Close = b.Close
+	}
+	return out
+}
+
+// ToCandles copies intraday bars through with their open time.
+func ToCandles(bars []IntradayBar) []Candle {
+	out := make([]Candle, 0, len(bars))
+	for _, b := range bars {
+		if b.Close == 0 {
+			continue
+		}
+		out = append(out, Candle{Time: UnixTime(b.OpenUnix), Open: b.Open, High: b.High, Low: b.Low, Close: b.Close})
+	}
+	return out
+}
+
+// Fold4H groups hourly bars into UTC blocks at 00:00, 04:00, 08:00, 12:00, 16:00, and 20:00.
+// A bar that starts inside a block joins that block.
+func Fold4H(bars []IntradayBar) []Candle {
+	const step int64 = 4 * 3600
+	ordered := append([]IntradayBar(nil), bars...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].OpenUnix < ordered[j].OpenUnix })
+	out := make([]Candle, 0, len(ordered)/4+1)
+	index := map[int64]int{}
+	for _, b := range ordered {
+		if b.Close == 0 || b.OpenUnix < 0 {
+			continue
+		}
+		key := b.OpenUnix - (b.OpenUnix % step)
+		i, ok := index[key]
+		if !ok {
+			index[key] = len(out)
+			out = append(out, Candle{Time: UnixTime(key), Open: b.Open, High: b.High, Low: b.Low, Close: b.Close})
+			continue
+		}
+		c := &out[i]
+		if b.High > c.High {
+			c.High = b.High
+		}
+		if b.Low < c.Low {
+			c.Low = b.Low
+		}
+		c.Close = b.Close
+	}
+	return out
+}
+
+// SessionCloses is the sparkline for the last market session.
+// Stocks and futures use the New York session, rolled back to Friday on a weekend.
+// Crypto uses the 24 hours ending at asOf.
+func SessionCloses(class string, points []Point, asOf time.Time) []float64 {
+	if len(points) == 0 {
+		return nil
+	}
+	ordered := append([]Point(nil), points...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Time.Before(ordered[j].Time) })
+	if asOf.IsZero() {
+		asOf = ordered[len(ordered)-1].Time
+	}
+	if class == Crypto {
+		cut := asOf.Add(-24 * time.Hour)
+		out := make([]float64, 0, len(ordered))
+		for _, p := range ordered {
+			if p.Price <= 0 || p.Time.Before(cut) {
+				continue
+			}
+			out = append(out, p.Price)
+		}
+		return out
+	}
+	day := SessionDay(class, asOf)
+	out := make([]float64, 0, len(ordered))
+	for _, p := range ordered {
+		if p.Price <= 0 {
+			continue
+		}
+		if NYDay(p.Time.Unix()) == day {
+			out = append(out, p.Price)
+		}
 	}
 	return out
 }

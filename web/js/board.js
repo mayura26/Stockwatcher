@@ -1,4 +1,4 @@
-import { formatClock, formatPct, formatPrice, pctClass } from './format.js';
+import { formatClock, formatPct, formatPrice, pctClass, priceTone } from './format.js';
 
 const COLORS = [
   { value: '#c6a15b', label: 'Brass' },
@@ -23,6 +23,7 @@ class SwBoard extends HTMLElement {
     this.sheetMode = 'create';
     this.draft = { color: COLORS[0].value, icon: 'mark' };
     this.sheetOpen = false;
+    this.openChanges = new Set();
     this.innerHTML = `
       <header class="top">
         <div class="brand">Stockwatcher</div>
@@ -34,10 +35,8 @@ class SwBoard extends HTMLElement {
       <div class="groups" role="tablist"></div>
       <div class="board">
         <div class="edit-slot"></div>
-        <div class="board-scroll">
-          <div class="cols"></div>
-          <div class="rows"></div>
-        </div>
+        <div class="cols"></div>
+        <div class="rows"></div>
         <button type="button" class="add-row" data-act="search" aria-label="Add a symbol">+</button>
       </div>
       ${groupSheet()}`;
@@ -110,7 +109,7 @@ class SwBoard extends HTMLElement {
     }
     const times = rows.map((r) => r.as_of).filter(Boolean);
     const oldest = times.length ? Math.min(...times) : 0;
-    cols.innerHTML = `<span class="asof">${oldest ? escapeHTML(formatClock(oldest)) : ''}</span><span></span><span class="chg-h">1H</span><span class="chg-h">4H</span><span class="chg-h">D</span><span class="chg-h">W</span><span class="chg-h">M</span>`;
+    cols.innerHTML = oldest ? `<span class="asof">${escapeHTML(formatClock(oldest))}</span>` : '';
   }
 
   renderRows(group) {
@@ -122,25 +121,28 @@ class SwBoard extends HTMLElement {
     }
     host.innerHTML = rows.map((row, i) => {
       const flash = this.flashes.get(row.id);
+      const open = this.openChanges.has(row.id);
       const main = `
           <span class="ident">
             <span class="sym">${escapeHTML(row.display)}</span>
             <span class="sub">${escapeHTML(row.name || '')}</span>
           </span>
-          <span class="px num">${formatPrice(row.price)}</span>
-          ${chg(row.change_1h)}
-          ${chg(row.change_4h)}
-          ${chg(row.change_d)}
-          ${chg(row.change_w)}
-          ${chg(row.change_m)}`;
-      const open = this.editing
+          ${sparkline(row.sparkline, row.change_d)}
+          <span class="px num ${priceTone(row.change_d)}">${formatPrice(row.price)}</span>`;
+      const body = this.editing
         ? `<div class="row-main">${main}</div>`
         : `<button type="button" class="row-main" data-open="${row.id}">${main}</button>`;
+      const more = open ? `<div class="more">
+            <span class="more-cell"><span class="chg-h">1H</span>${chg(row.change_1h)}</span>
+            <span class="more-cell"><span class="chg-h">4H</span>${chg(row.change_4h)}</span>
+            <span class="more-cell"><span class="chg-h">W</span>${chg(row.change_w)}</span>
+            <span class="more-cell"><span class="chg-h">M</span>${chg(row.change_m)}</span>
+          </div>` : '';
       const moves = this.editing ? `<span class="row-edit">
             <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
             <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="1" ${i === rows.length - 1 ? 'disabled' : ''}>Down</button>
           </span>` : '';
-      return `<div class="row${flash ? ' flash-' + flash : ''}">${open}<button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>${moves}</div>`;
+      return `<div class="row${flash ? ' flash-' + flash : ''}${open ? ' is-open' : ''}">${body}<button type="button" class="day" data-expand="${row.id}" aria-expanded="${open}"><span class="chg-h">D</span>${chg(row.change_d)}</button><button type="button" class="row-x" data-remove="${row.id}" aria-label="Remove ${escapeAttr(row.display)}">×</button>${more}${moves}</div>`;
     }).join('');
   }
 
@@ -192,6 +194,14 @@ class SwBoard extends HTMLElement {
     if (icon) {
       this.draft.icon = icon.dataset.icon;
       this.syncPicks();
+      return;
+    }
+    const expand = event.target.closest('[data-expand]');
+    if (expand) {
+      const id = Number(expand.dataset.expand);
+      if (this.openChanges.has(id)) this.openChanges.delete(id);
+      else this.openChanges.add(id);
+      this.renderRows(this.group);
       return;
     }
     const open = event.target.closest('[data-open]');
@@ -301,6 +311,26 @@ function chipColor(value) {
 
 function chg(n) {
   return `<span class="chg ${pctClass(n)}">${formatPct(n)}</span>`;
+}
+
+function sparkline(values, change) {
+  if (!values || values.length < 2) return '<span class="spark"></span>';
+  const w = 68;
+  const h = 28;
+  const pad = 2;
+  let min = values[0];
+  let max = values[0];
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const span = max - min || 1;
+  const d = values.map((v, i) => {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (v - min) / span) * (h - pad * 2);
+    return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }).join(' ');
+  return `<span class="spark ${pctClass(change)}" aria-hidden="true"><svg viewBox="0 0 ${w} ${h}"><path d="${d}"></path></svg></span>`;
 }
 
 function escapeHTML(s) {

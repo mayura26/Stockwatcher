@@ -63,6 +63,17 @@ func (c *Client) Intraday(ctx context.Context, symbol string) ([]market.Point, e
 	return ParseIntraday(body)
 }
 
+// Candles loads unadjusted intraday OHLC. interval is 5m or 60m. rng is a Yahoo range such as 60d or 2y.
+func (c *Client) Candles(ctx context.Context, symbol, interval, rng string) ([]market.IntradayBar, error) {
+	c.pace()
+	u := c.base() + "/v8/finance/chart/" + url.PathEscape(symbol) + "?range=" + url.QueryEscape(rng) + "&interval=" + url.QueryEscape(interval)
+	body, err := c.fetch(ctx, symbol, u)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCandles(body)
+}
+
 func (c *Client) fetch(ctx context.Context, symbol, u string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -279,6 +290,68 @@ func ParseIntraday(data []byte) ([]market.Point, error) {
 		points = append(points, market.Point{Time: barStart(ts).Add(intradayStep), Price: *cl})
 	}
 	return points, nil
+}
+
+// ParseCandles decodes a Yahoo intraday chart into OHLC. Time is the bar open.
+func ParseCandles(data []byte) ([]market.IntradayBar, error) {
+	var env struct {
+		Chart struct {
+			Result []struct {
+				Timestamp  []int64 `json:"timestamp"`
+				Indicators struct {
+					Quote []struct {
+						Open  []*float64 `json:"open"`
+						High  []*float64 `json:"high"`
+						Low   []*float64 `json:"low"`
+						Close []*float64 `json:"close"`
+					} `json:"quote"`
+				} `json:"indicators"`
+			} `json:"result"`
+			Error *struct {
+				Code        string `json:"code"`
+				Description string `json:"description"`
+			} `json:"error"`
+		} `json:"chart"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, err
+	}
+	if env.Chart.Error != nil {
+		msg := env.Chart.Error.Description
+		if msg == "" {
+			msg = env.Chart.Error.Code
+		}
+		if msg == "" {
+			msg = "yahoo chart error"
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	if len(env.Chart.Result) == 0 {
+		return nil, fmt.Errorf("yahoo returned no chart")
+	}
+	res := env.Chart.Result[0]
+	var quote struct {
+		Open, High, Low, Close []*float64
+	}
+	if len(res.Indicators.Quote) > 0 {
+		q := res.Indicators.Quote[0]
+		quote.Open, quote.High, quote.Low, quote.Close = q.Open, q.High, q.Low, q.Close
+	}
+	out := make([]market.IntradayBar, 0, len(res.Timestamp))
+	for i, ts := range res.Timestamp {
+		cl := at(quote.Close, i)
+		if cl == nil || *cl == 0 {
+			continue
+		}
+		out = append(out, market.IntradayBar{
+			OpenUnix: barStart(ts).Unix(),
+			Open:     or(at(quote.Open, i), *cl),
+			High:     or(at(quote.High, i), *cl),
+			Low:      or(at(quote.Low, i), *cl),
+			Close:    *cl,
+		})
+	}
+	return out, nil
 }
 
 func barStart(ts int64) time.Time {

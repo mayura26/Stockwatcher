@@ -32,7 +32,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	}
 	day := 1.25
 	h1 := 0.5
-	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, &h1, nil, time.Now().Unix(), true); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, &h1, nil, []float64{1, 2, 3}, time.Now().Unix(), true); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertBars(ctx, sym.ID, []market.Bar{{Day: "2024-01-02", Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 3}}); err != nil {
@@ -43,10 +43,10 @@ func TestBoardGroupsAndLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := board.Groups[0].Rows[0]
-	if len(board.Groups[0].Rows) != 1 || row.Display != "ES" || row.Price == nil || *row.Price != 5800 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || row.ChangeH4 != nil {
+	if len(board.Groups[0].Rows) != 1 || row.Display != "ES" || row.Price == nil || *row.Price != 5800 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || row.ChangeH4 != nil || len(row.Sparkline) != 3 || row.Sparkline[2] != 3 {
 		t.Fatalf("%+v", board.Groups[0].Rows)
 	}
-	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, time.Now().Unix(), false); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, nil, time.Now().Unix(), false); err != nil {
 		t.Fatal(err)
 	}
 	board, err = st.Board(ctx)
@@ -54,7 +54,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	row = board.Groups[0].Rows[0]
-	if row.Price == nil || *row.Price != 5801 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 {
+	if row.Price == nil || *row.Price != 5801 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || len(row.Sparkline) != 3 {
 		t.Fatalf("preserved %+v", row)
 	}
 	ok, err := st.TryLock(ctx, "tick", time.Minute)
@@ -263,7 +263,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	defer st.Close()
 	ctx := context.Background()
 	h1, h4 := 1.5, -2.0
-	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, &h1, &h4, 2, true); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, &h1, &h4, nil, 2, true); err != nil {
 		t.Fatal(err)
 	}
 	q, err := st.Quote(ctx, 1)
@@ -273,7 +273,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	if q.Price != 11 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 {
 		t.Fatalf("%+v", q)
 	}
-	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, 3, false); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 3, false); err != nil {
 		t.Fatal(err)
 	}
 	q, err = st.Quote(ctx, 1)

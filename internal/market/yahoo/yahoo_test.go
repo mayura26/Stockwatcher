@@ -77,6 +77,20 @@ func TestParseIntraday(t *testing.T) {
 	}
 }
 
+func TestParseCandles(t *testing.T) {
+	raw := []byte(`{"chart":{"result":[{"timestamp":[1700000000,1700000300],"indicators":{"quote":[{"open":[9,null],"high":[11,12],"low":[8,9],"close":[10,11]}]}}],"error":null}}`)
+	bars, err := ParseCandles(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 2 || bars[0].OpenUnix != 1700000000 || bars[0].Open != 9 || bars[0].High != 11 || bars[0].Low != 8 || bars[0].Close != 10 {
+		t.Fatalf("first %+v", bars)
+	}
+	if bars[1].OpenUnix != 1700000300 || bars[1].Open != 11 || bars[1].Close != 11 {
+		t.Fatalf("second %+v", bars[1])
+	}
+}
+
 func mustNY(t *testing.T) *time.Location {
 	t.Helper()
 	loc, err := time.LoadLocation("America/New_York")

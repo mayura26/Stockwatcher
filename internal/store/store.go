@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -111,6 +112,7 @@ CREATE TABLE IF NOT EXISTS quotes (
   change_m REAL,
   change_1h REAL,
   change_4h REAL,
+  sparkline TEXT,
   as_of INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS bars (
@@ -157,7 +159,10 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureGroupAppearance(); err != nil {
 		return err
 	}
-	return s.ensureQuoteHourly()
+	if err := s.ensureQuoteHourly(); err != nil {
+		return err
+	}
+	return s.ensureQuoteSparkline()
 }
 
 // ensureAlertRepeat adds the repeat column on databases created before one-off
@@ -267,24 +272,54 @@ func (s *Store) ensureQuoteHourly() error {
 	return nil
 }
 
+// ensureQuoteSparkline adds the last-session closes on databases created before them.
+func (s *Store) ensureQuoteSparkline() error {
+	rows, err := s.db.Query(`PRAGMA table_info(quotes)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "sparkline" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE quotes ADD COLUMN sparkline TEXT`)
+	return err
+}
+
 func (s *Store) ensureGroup() error {
 	_, err := s.db.Exec(`INSERT INTO groups(name, position) SELECT 'Watch', 0 WHERE NOT EXISTS (SELECT 1 FROM groups)`)
 	return err
 }
 
 type Row struct {
-	ID         int64    `json:"id"`
-	Display    string   `json:"display"`
-	Name       string   `json:"name"`
-	AssetClass string   `json:"asset_class"`
-	Price      *float64 `json:"price"`
-	ChangeD    *float64 `json:"change_d"`
-	ChangeW    *float64 `json:"change_w"`
-	ChangeM    *float64 `json:"change_m"`
-	ChangeH1   *float64 `json:"change_1h"`
-	ChangeH4   *float64 `json:"change_4h"`
-	AsOf       *int64   `json:"as_of"`
-	Position   int      `json:"position"`
+	ID         int64     `json:"id"`
+	Display    string    `json:"display"`
+	Name       string    `json:"name"`
+	AssetClass string    `json:"asset_class"`
+	Price      *float64  `json:"price"`
+	ChangeD    *float64  `json:"change_d"`
+	ChangeW    *float64  `json:"change_w"`
+	ChangeM    *float64  `json:"change_m"`
+	ChangeH1   *float64  `json:"change_1h"`
+	ChangeH4   *float64  `json:"change_4h"`
+	Sparkline  []float64 `json:"sparkline,omitempty"`
+	AsOf       *int64    `json:"as_of"`
+	Position   int       `json:"position"`
 }
 
 type Group struct {
@@ -306,7 +341,7 @@ func (s *Store) Board(ctx context.Context) (Board, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT g.id, g.name, g.color, g.icon, g.position,
        s.id, s.display, s.name, s.asset_class,
-       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.as_of,
+       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
        gs.position
 FROM groups g
 LEFT JOIN group_symbols gs ON gs.group_id = g.id
@@ -327,10 +362,11 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			display, name, cls   sql.NullString
 			price, cd, cw, cm    sql.NullFloat64
 			h1, h4               sql.NullFloat64
+			spark                sql.NullString
 			asOf                 sql.NullInt64
 			spos                 sql.NullInt64
 		)
-		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &asOf, &spos); err != nil {
+		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &spos); err != nil {
 			return Board{}, err
 		}
 		i, ok := index[gid]
@@ -357,6 +393,7 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			ChangeM:    floatPtr(cm),
 			ChangeH1:   floatPtr(h1),
 			ChangeH4:   floatPtr(h4),
+			Sparkline:  decodeSpark(spark),
 			AsOf:       intPtr(asOf),
 			Position:   pos,
 		})
@@ -368,6 +405,17 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 		return Board{}, err
 	}
 	return board, nil
+}
+
+func decodeSpark(n sql.NullString) []float64 {
+	if !n.Valid || n.String == "" {
+		return nil
+	}
+	var out []float64
+	if err := json.Unmarshal([]byte(n.String), &out); err != nil || len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func floatPtr(n sql.NullFloat64) *float64 {
@@ -689,15 +737,24 @@ func (s *Store) Quote(ctx context.Context, symbolID int64) (QuoteRow, error) {
 	return q, nil
 }
 
-// UpsertQuote writes a quote. hourly false keeps change_1h and change_4h already stored.
-func (s *Store) UpsertQuote(ctx context.Context, symbolID int64, price float64, prev, d, w, m, h1, h4 *float64, asOf int64, hourly bool) error {
+// UpsertQuote writes a quote. hourly false keeps change_1h, change_4h, and the sparkline already stored.
+func (s *Store) UpsertQuote(ctx context.Context, symbolID int64, price float64, prev, d, w, m, h1, h4 *float64, spark []float64, asOf int64, hourly bool) error {
 	flag := 0
+	var sparkText any
 	if hourly {
 		flag = 1
+		if spark == nil {
+			spark = []float64{}
+		}
+		raw, err := json.Marshal(spark)
+		if err != nil {
+			return err
+		}
+		sparkText = string(raw)
 	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO quotes(symbol_id, price, prev_close, change_d, change_w, change_m, change_1h, change_4h, as_of)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO quotes(symbol_id, price, prev_close, change_d, change_w, change_m, change_1h, change_4h, sparkline, as_of)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(symbol_id) DO UPDATE SET
   price = excluded.price,
   prev_close = excluded.prev_close,
@@ -706,7 +763,8 @@ ON CONFLICT(symbol_id) DO UPDATE SET
   change_m = excluded.change_m,
   change_1h = CASE WHEN ? THEN excluded.change_1h ELSE quotes.change_1h END,
   change_4h = CASE WHEN ? THEN excluded.change_4h ELSE quotes.change_4h END,
-  as_of = excluded.as_of`, symbolID, price, prev, d, w, m, h1, h4, asOf, flag, flag)
+  sparkline = CASE WHEN ? THEN excluded.sparkline ELSE quotes.sparkline END,
+  as_of = excluded.as_of`, symbolID, price, prev, d, w, m, h1, h4, sparkText, asOf, flag, flag, flag)
 	return err
 }
 

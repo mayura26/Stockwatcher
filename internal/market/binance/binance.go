@@ -66,15 +66,44 @@ func (c *Client) Tickers(ctx context.Context, symbols []string) (map[string]mark
 	return ParseTickers(body)
 }
 
-// Intraday loads the last 60 five-minute closes, enough for a 4-hour lookback.
-// Point time is the candle close.
+// Intraday loads about 24 hours of five-minute closes. Point time is the candle close.
 func (c *Client) Intraday(ctx context.Context, symbol string) ([]market.Point, error) {
-	u := c.base() + "/api/v3/klines?symbol=" + url.QueryEscape(symbol) + "&interval=5m&limit=60"
+	u := c.base() + "/api/v3/klines?symbol=" + url.QueryEscape(symbol) + "&interval=5m&limit=288"
 	body, err := c.get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	return ParseIntraday(body)
+}
+
+// Candles pages spot klines from since. interval is 5m, 1h, or 4h.
+func (c *Client) Candles(ctx context.Context, symbol, interval string, since time.Time) ([]market.IntradayBar, error) {
+	start := since.UnixMilli()
+	var all []market.IntradayBar
+	for pages := 0; pages < 20; pages++ {
+		u := fmt.Sprintf("%s/api/v3/klines?symbol=%s&interval=%s&limit=1000&startTime=%d", c.base(), url.QueryEscape(symbol), url.QueryEscape(interval), start)
+		body, err := c.get(ctx, u)
+		if err != nil {
+			return nil, err
+		}
+		bars, err := ParseOHLC(body)
+		if err != nil {
+			return nil, err
+		}
+		if len(bars) == 0 {
+			break
+		}
+		all = append(all, bars...)
+		if len(bars) < 1000 {
+			break
+		}
+		next := (bars[len(bars)-1].OpenUnix + 1) * 1000
+		if next <= start {
+			break
+		}
+		start = next
+	}
+	return all, nil
 }
 
 // DailyBars loads daily klines. full walks about five years; otherwise a short tail.
@@ -286,6 +315,36 @@ func ParseIntraday(data []byte) ([]market.Point, error) {
 		points = append(points, market.Point{Time: time.UnixMilli(closeMS), Price: cl})
 	}
 	return points, nil
+}
+
+// ParseOHLC decodes spot klines into candles. Time is the bar open in seconds.
+func ParseOHLC(data []byte) ([]market.IntradayBar, error) {
+	rows, err := decodeKlines(data)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]market.IntradayBar, 0, len(rows))
+	for _, row := range rows {
+		if len(row) < 5 {
+			continue
+		}
+		openMS, okT := asInt64(row[0])
+		op, ok1 := asFloat(row[1])
+		hi, ok2 := asFloat(row[2])
+		lo, ok3 := asFloat(row[3])
+		cl, ok4 := asFloat(row[4])
+		if !okT || !ok1 || !ok2 || !ok3 || !ok4 || cl == 0 {
+			continue
+		}
+		out = append(out, market.IntradayBar{
+			OpenUnix: time.UnixMilli(openMS).Unix(),
+			Open:     op,
+			High:     hi,
+			Low:      lo,
+			Close:    cl,
+		})
+	}
+	return out, nil
 }
 
 func decodeKlines(data []byte) ([][]any, error) {

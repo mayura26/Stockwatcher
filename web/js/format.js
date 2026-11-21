@@ -19,6 +19,11 @@ export function pctClass(n) {
   return Number(n) > 0 ? 'up' : 'down';
 }
 
+export function priceTone(n) {
+  const tone = pctClass(n);
+  return tone === 'flat' ? '' : tone;
+}
+
 export function formatClock(unix) {
   if (!unix) return '';
   const d = new Date(unix * 1000);
