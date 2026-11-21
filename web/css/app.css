@@ -287,6 +287,13 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
 .day-ext .chg-h,
 .day-ext .chg { font-size: 0.62rem; }
 .day-ext .chg-h { color: var(--muted); }
+.px-change {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 0.28rem;
+}
+.px-change .chg-h { color: var(--muted); }
 .more {
   grid-column: 1 / -1;
   display: flex;
@@ -588,6 +595,14 @@ sw-search {
 }
 .search-head, .toggles { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.8rem 1rem 0.4rem; }
 .toggles { flex-wrap: wrap; }
+.range-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.range-scroll::-webkit-scrollbar { display: none; }
 .results { overflow: auto; padding: 0 1rem 1rem; }
 .result {
   display: flex;
@@ -602,7 +617,8 @@ sw-search {
 .hint { color: var(--muted); font-size: 0.85rem; padding: 0.4rem 1rem 0.8rem; margin: 0; }
 .seg { border: 1px solid var(--line); }
 .seg button { min-height: 34px; }
-.seg.res button { padding: 0.35rem 0.38rem; font-size: 0.75rem; }
+.seg.res { width: max-content; }
+.seg.res button { padding: 0.35rem 0.45rem; font-size: 0.75rem; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button[aria-pressed="true"] { background: var(--raise); }
 

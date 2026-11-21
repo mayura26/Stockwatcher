@@ -1,11 +1,13 @@
 import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, repeatLabel } from './format.js';
 
-const RES_KEY = 'sw.resolution';
-const RESOLUTIONS = new Set(['5m', '1H', '4H', 'D', 'W', 'M']);
+const RANGE_KEY = 'sw.range';
+const RANGES = ['D', '3D', '1W', '1M', '3M', '6M', 'YTD', '1Y', '5Y'];
 
-function savedResolution() {
-  const saved = localStorage.getItem(RES_KEY);
-  return RESOLUTIONS.has(saved) ? saved : 'D';
+function savedRange() {
+  const saved = localStorage.getItem(RANGE_KEY) || localStorage.getItem('sw.resolution');
+  if (saved === 'W') return '1W';
+  if (saved === 'M') return '1M';
+  return RANGES.includes(saved) ? saved : 'D';
 }
 
 let chartsPromise;
@@ -26,7 +28,7 @@ function loadCharts() {
 
 class SwChart extends HTMLElement {
   connectedCallback() {
-    this.resolution = savedResolution();
+    this.range = savedRange();
     this.kind = 'candle';
     this.direction = 'above';
     this.repeat = 'once';
@@ -47,7 +49,10 @@ class SwChart extends HTMLElement {
           <div class="px-block">
             <div class="px num" data-price></div>
             <div class="day-ext" data-ext hidden></div>
-            <div class="chg" data-change></div>
+            <div class="px-change">
+              <div class="chg" data-change></div>
+              <span class="chg-h" data-span></span>
+            </div>
           </div>
         </header>
         <div class="toggles">
@@ -55,13 +60,10 @@ class SwChart extends HTMLElement {
             <button type="button" data-kind="line">Line</button>
             <button type="button" data-kind="candle" aria-pressed="true">Candle</button>
           </div>
-          <div class="seg res" role="group" aria-label="Resolution">
-            <button type="button" data-res="5m">5m</button>
-            <button type="button" data-res="1H">1H</button>
-            <button type="button" data-res="4H">4H</button>
-            <button type="button" data-res="D" aria-pressed="true">D</button>
-            <button type="button" data-res="W">W</button>
-            <button type="button" data-res="M">M</button>
+          <div class="range-scroll">
+            <div class="seg res" role="group" aria-label="Range">
+              ${RANGES.map((range) => `<button type="button" data-range="${range}"${range === 'D' ? ' aria-pressed="true"' : ''}>${range}</button>`).join('')}
+            </div>
           </div>
         </div>
         <div class="chart-stage">
@@ -113,10 +115,10 @@ class SwChart extends HTMLElement {
         this.syncPressed();
         this.paint();
       }
-      const res = event.target.closest('[data-res]');
-      if (res && res.dataset.res !== this.resolution) {
-        this.resolution = res.dataset.res;
-        localStorage.setItem(RES_KEY, this.resolution);
+      const res = event.target.closest('[data-range]');
+      if (res && res.dataset.range !== this.range) {
+        this.range = res.dataset.range;
+        localStorage.setItem(RANGE_KEY, this.range);
         this.userRanged = false;
         this.syncPressed();
         this.loadBars();
@@ -156,7 +158,7 @@ class SwChart extends HTMLElement {
       this.userRanged = false;
       this.syncPressed();
     }
-    if (!this.payload || this.payload.resolution !== this.resolution) await this.loadBars();
+    if (!this.payload || this.payload.range !== this.range) await this.loadBars();
     else {
       this.applyHeader();
       await this.paint();
@@ -173,8 +175,8 @@ class SwChart extends HTMLElement {
     this.setLoading(true);
     this.setMsg('Loading history…');
     try {
-      this.payload = await this.api.get('/api/bars?id=' + this.symbolId + '&resolution=' + this.resolution);
-      const intra = intradayRes(this.resolution);
+      this.payload = await this.api.get('/api/bars?id=' + this.symbolId + '&range=' + this.range);
+      const intra = intradayRange(this.range);
       if (this.chart && this.chartIntra !== intra) this.destroyChart();
       this.chartIntra = intra;
       this.applyHeader();
@@ -191,7 +193,7 @@ class SwChart extends HTMLElement {
     const sym = this.payload?.symbol || {};
     const source = this.live || sym;
     const price = this.live?.price ?? sym.price;
-    const change = this.live?.change_d ?? sym.change_d;
+    const change = this.periodChange();
     const bars = this.payload?.bars || [];
     const shown = price ?? (bars.length ? bars[bars.length - 1].close : null);
     this.querySelector('[data-display]').textContent = sym.display || '';
@@ -204,6 +206,8 @@ class SwChart extends HTMLElement {
     const ch = this.querySelector('[data-change]');
     ch.textContent = formatPct(change);
     ch.className = 'chg ' + pctClass(change);
+    const span = this.querySelector('[data-span]');
+    if (span) span.textContent = this.range || '';
     const ext = this.querySelector('[data-ext]');
     const label = source.ext_session === 'pre' ? 'Pre' : source.ext_session === 'post' ? 'After' : '';
     if (label && source.ext_pct != null) {
@@ -213,6 +217,18 @@ class SwChart extends HTMLElement {
       ext.hidden = true;
       ext.textContent = '';
     }
+  }
+
+  periodChange() {
+    const sym = this.payload?.symbol || {};
+    const price = this.live?.price ?? sym.price;
+    if (this.range === 'D') {
+      const day = this.live?.change_d ?? sym.change_d;
+      if (day != null) return day;
+    }
+    const base = Number(this.payload?.change_base);
+    if (base > 0 && price > 0) return (price / base - 1) * 100;
+    return this.payload?.change ?? null;
   }
 
   async loadAlerts() {
@@ -275,7 +291,7 @@ class SwChart extends HTMLElement {
           rightOffset: 2,
           fixRightEdge: true,
           secondsVisible: false,
-          timeVisible: intradayRes(this.resolution),
+          timeVisible: intradayRange(this.range),
           tickMarkFormatter: (time, type) => tickLabel(time, type, LW.TickMarkType),
         },
         crosshair: {
@@ -327,7 +343,7 @@ class SwChart extends HTMLElement {
         this.series.setData(bars);
       }
       this.chart.timeScale().applyOptions({
-        timeVisible: intradayRes(this.resolution),
+        timeVisible: intradayRange(this.range),
         secondsVisible: false,
       });
       if (kept) this.chart.timeScale().setVisibleLogicalRange(kept);
@@ -393,7 +409,7 @@ class SwChart extends HTMLElement {
 
   syncPressed() {
     for (const btn of this.querySelectorAll('[data-kind]')) btn.setAttribute('aria-pressed', btn.dataset.kind === this.kind ? 'true' : 'false');
-    for (const btn of this.querySelectorAll('[data-res]')) btn.setAttribute('aria-pressed', btn.dataset.res === this.resolution ? 'true' : 'false');
+    for (const btn of this.querySelectorAll('[data-range]')) btn.setAttribute('aria-pressed', btn.dataset.range === this.range ? 'true' : 'false');
     for (const btn of this.querySelectorAll('[data-dir]')) btn.setAttribute('aria-pressed', btn.dataset.dir === this.direction ? 'true' : 'false');
     for (const btn of this.querySelectorAll('[data-repeat]')) btn.setAttribute('aria-pressed', btn.dataset.repeat === this.repeat ? 'true' : 'false');
   }
@@ -465,7 +481,7 @@ class SwChart extends HTMLElement {
       return;
     }
     this.holdRange();
-    this.withWindow(() => showWindow(this.chart, bars));
+    this.withWindow(() => this.chart.timeScale().fitContent());
     this.rangeChanged = false;
     this.sizeChanged = false;
   }
@@ -485,22 +501,11 @@ class SwChart extends HTMLElement {
   disconnectedCallback() { this.destroyChart(); }
 }
 
-function intradayRes(res) {
-  return res === '5m' || res === '1H' || res === '4H';
+function intradayRange(range) {
+  return range === 'D' || range === '3D' || range === '1W' || range === '1M';
 }
-
-// Pixels per candle when a resolution opens. The visible count follows the plot width.
-const OPEN_SPACING = 5;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-function showWindow(chart, bars) {
-  const width = chart.timeScale().width();
-  const count = Math.min(bars.length, Math.max(1, Math.round(width / OPEN_SPACING)));
-  chart.timeScale().applyOptions({ barSpacing: OPEN_SPACING });
-  const last = bars.length - 1;
-  chart.timeScale().setVisibleLogicalRange({ from: last - count + 1, to: last });
-}
 
 function tickLabel(time, type, marks) {
   const parts = timeParts(time);

@@ -35,6 +35,7 @@ type Syncer struct {
 
 	mu       sync.Mutex
 	inflight map[int64]chan struct{}
+	spans    map[string]chan struct{}
 }
 
 func New(st *store.Store, fh *finnhub.Client, yh *yahoo.Client, bn *binance.Client, ps *push.Sender) *Syncer {
@@ -45,6 +46,7 @@ func New(st *store.Store, fh *finnhub.Client, yh *yahoo.Client, bn *binance.Clie
 		Binance:  bn,
 		Push:     ps,
 		inflight: map[int64]chan struct{}{},
+		spans:    map[string]chan struct{}{},
 	}
 }
 
@@ -71,6 +73,9 @@ func (s *Syncer) Enqueue(id int64) {
 		}
 		if err := s.EnsureLogo(ctx, id); err != nil {
 			slog.Error("logo", "symbol", id, "err", err)
+		}
+		if err := s.warmIntraday(ctx, id); err != nil {
+			slog.Error("intraday cache", "symbol", id, "err", err)
 		}
 	}()
 }
@@ -158,48 +163,141 @@ func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *
 	}
 }
 
-// Candles loads 5m, 1H, or 4H bars for a chart. They are not stored.
-func (s *Syncer) Candles(ctx context.Context, class, provider, resolution string) ([]market.Candle, error) {
+// SpanCandles returns the candles for one chart range.
+// Intraday ranges read the local series and fetch only what is missing.
+// Daily ranges are sliced by the caller from stored sessions.
+func (s *Syncer) SpanCandles(ctx context.Context, id int64, spanName string) ([]market.Candle, error) {
+	span, ok := market.LookupSpan(spanName)
+	if !ok || !span.Intraday() {
+		return nil, fmt.Errorf("unknown intraday range %s", spanName)
+	}
+	sym, err := s.Store.Symbol(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.loadIntraday(ctx, id, sym.AssetClass, sym.ProviderSymbol, span.Interval)
+	if err != nil {
+		return nil, err
+	}
+	daily, err := s.Store.Bars(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return market.ShapeSpan(span, market.TrimIntraday(sym.AssetClass, spanName, raw, daily, s.now())), nil
+}
+
+// warmIntraday fills the 15-minute and hourly series once, in the background add job.
+func (s *Syncer) warmIntraday(ctx context.Context, id int64) error {
+	sym, err := s.Store.Symbol(ctx, id)
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, interval := range []string{market.Interval15m, market.Interval60m} {
+		if _, err := s.loadIntraday(ctx, id, sym.AssetClass, sym.ProviderSymbol, interval); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (s *Syncer) loadIntraday(ctx context.Context, id int64, class, provider, interval string) ([]market.IntradayBar, error) {
+	key := strconv.FormatInt(id, 10) + ":" + interval
+	s.mu.Lock()
+	if wait, ok := s.spans[key]; ok {
+		s.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return s.Store.IntradayBars(ctx, id, interval, market.CacheStart(interval, s.now()))
+	}
+	ch := make(chan struct{})
+	s.spans[key] = ch
+	s.mu.Unlock()
+
+	err := s.fillIntraday(ctx, id, class, provider, interval)
+
+	s.mu.Lock()
+	delete(s.spans, key)
+	close(ch)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return s.Store.IntradayBars(ctx, id, interval, market.CacheStart(interval, s.now()))
+}
+
+func (s *Syncer) fillIntraday(ctx context.Context, id int64, class, provider, interval string) error {
 	now := s.now()
+	start := market.CacheStart(interval, now)
+	have, err := s.Store.IntradayBars(ctx, id, interval, start)
+	if err != nil {
+		return err
+	}
+	switch market.IntradayFetch(have, start, now, interval) {
+	case market.FetchNone:
+		return nil
+	case market.FetchTail:
+		got, err := s.fetchIntradaySince(ctx, class, provider, interval, time.Unix(have[len(have)-1].OpenUnix, 0))
+		if err != nil {
+			return nil
+		}
+		if err := s.Store.UpsertIntraday(ctx, id, interval, got); err != nil {
+			return err
+		}
+	default:
+		got, err := s.fetchIntradayFull(ctx, class, provider, interval, time.Unix(start, 0))
+		if err != nil {
+			return err
+		}
+		if err := s.Store.UpsertIntraday(ctx, id, interval, got); err != nil {
+			return err
+		}
+	}
+	return s.Store.PruneIntraday(ctx, id, interval, start)
+}
+
+func (s *Syncer) fetchIntradayFull(ctx context.Context, class, provider, interval string, since time.Time) ([]market.IntradayBar, error) {
 	switch class {
 	case market.Stock, market.Future:
 		if s.Yahoo == nil {
 			return nil, fmt.Errorf("yahoo unavailable")
 		}
-		interval, rng := "5m", "60d"
-		if resolution != "5m" {
-			interval, rng = "60m", "2y"
-		}
-		bars, err := s.Yahoo.Candles(ctx, provider, interval, rng)
-		if err != nil {
-			return nil, err
-		}
-		if resolution == "4H" {
-			return market.Fold4H(bars), nil
-		}
-		return market.ToCandles(bars), nil
+		return s.Yahoo.Candles(ctx, provider, interval, market.YahooRange(interval))
 	case market.Crypto:
 		if s.Binance == nil {
 			return nil, fmt.Errorf("binance unavailable")
 		}
-		interval := "5m"
-		since := now.AddDate(0, 0, -60)
-		switch resolution {
-		case "1H":
-			interval = "1h"
-			since = now.AddDate(-2, 0, 0)
-		case "4H":
-			interval = "4h"
-			since = now.AddDate(-2, 0, 0)
-		}
-		bars, err := s.Binance.Candles(ctx, provider, interval, since)
-		if err != nil {
-			return nil, err
-		}
-		return market.ToCandles(bars), nil
+		return s.Binance.Candles(ctx, provider, binanceInterval(interval), since)
 	default:
 		return nil, fmt.Errorf("unknown asset class %s", class)
 	}
+}
+
+func (s *Syncer) fetchIntradaySince(ctx context.Context, class, provider, interval string, from time.Time) ([]market.IntradayBar, error) {
+	switch class {
+	case market.Stock, market.Future:
+		if s.Yahoo == nil {
+			return nil, fmt.Errorf("yahoo unavailable")
+		}
+		return s.Yahoo.CandlesSince(ctx, provider, interval, from, s.now())
+	case market.Crypto:
+		if s.Binance == nil {
+			return nil, fmt.Errorf("binance unavailable")
+		}
+		return s.Binance.Candles(ctx, provider, binanceInterval(interval), from)
+	default:
+		return nil, fmt.Errorf("unknown asset class %s", class)
+	}
+}
+
+func binanceInterval(interval string) string {
+	if interval == market.Interval60m {
+		return "1h"
+	}
+	return interval
 }
 
 // Backfill loads about five years of daily bars. Concurrent callers share one fetch.

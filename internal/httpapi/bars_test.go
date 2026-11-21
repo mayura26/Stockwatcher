@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"stockwatcher/internal/config"
 	"stockwatcher/internal/market"
@@ -16,9 +17,12 @@ import (
 	"stockwatcher/internal/syncer"
 )
 
-func TestBarsResolution(t *testing.T) {
+func TestBarsRange(t *testing.T) {
+	open := time.Now().Unix()
+	open -= open % (15 * 60)
 	yahooSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"chart":{"result":[{"timestamp":[1700000000],"indicators":{"quote":[{"open":[9],"high":[11],"low":[8],"close":[10]}]}}],"error":null}}`))
+		body := `{"chart":{"result":[{"timestamp":[` + strconv.FormatInt(open, 10) + `],"indicators":{"quote":[{"open":[9],"high":[11],"low":[8],"close":[10]}]}}],"error":null}}`
+		_, _ = w.Write([]byte(body))
 	}))
 	defer yahooSrv.Close()
 
@@ -44,18 +48,40 @@ func TestBarsResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	prev := 100.0
+	day := 1.5
+	if err := st.UpsertQuote(ctx, sym.ID, 110, &prev, &day, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	var daily []market.Bar
+	for i := 0; i < 80; i++ {
+		day := now.AddDate(0, 0, -79+i).Format("2006-01-02")
+		daily = append(daily, market.Bar{Day: day, Open: 1, High: 2, Low: 1, Close: float64(i + 1)})
+	}
+	if err := st.UpsertBars(ctx, sym.ID, daily); err != nil {
+		t.Fatal(err)
+	}
+
 	srv := New(st, syncer.New(st, nil, &yahoo.Client{Base: yahooSrv.URL}, nil, nil), config.Config{AccessToken: "testtoken"})
 	h := srv.Handler()
+	get := func(q string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/bars?id="+strconv.FormatInt(sym.ID, 10)+q, nil)
+		req.Header.Set("Authorization", "Bearer testtoken")
+		h.ServeHTTP(rec, req)
+		return rec
+	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/bars?id="+strconv.FormatInt(sym.ID, 10)+"&resolution=5m", nil)
-	req.Header.Set("Authorization", "Bearer testtoken")
-	h.ServeHTTP(rec, req)
+	rec := get("&range=D")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		Resolution string `json:"resolution"`
+		Range      string   `json:"range"`
+		Change     *float64 `json:"change"`
+		ChangeBase *float64 `json:"change_base"`
 		Bars       []struct {
 			Time  int64   `json:"time"`
 			Close float64 `json:"close"`
@@ -64,14 +90,33 @@ func TestBarsResolution(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Resolution != "5m" || len(body.Bars) != 1 || body.Bars[0].Time != 1700000000 || body.Bars[0].Close != 10 {
-		t.Fatalf("%+v", body)
+	if body.Range != "D" || body.Change == nil || *body.Change != 1.5 || body.ChangeBase == nil || *body.ChangeBase != 100 {
+		t.Fatalf("day %+v", body)
+	}
+	if len(body.Bars) != 1 || body.Bars[0].Time != open || body.Bars[0].Close != 10 {
+		t.Fatalf("day bars %+v", body.Bars)
 	}
 
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/bars?id="+strconv.FormatInt(sym.ID, 10)+"&resolution=nope", nil)
-	req.Header.Set("Authorization", "Bearer testtoken")
-	h.ServeHTTP(rec, req)
+	rec = get("&range=3M")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	var quarter struct {
+		Range      string   `json:"range"`
+		ChangeBase *float64 `json:"change_base"`
+		Bars       []struct {
+			Close float64 `json:"close"`
+		} `json:"bars"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &quarter); err != nil {
+		t.Fatal(err)
+	}
+	_, wantBase := market.RangeMove(market.Stock, "3M", 110, daily, time.Now())
+	if quarter.Range != "3M" || quarter.ChangeBase == nil || *quarter.ChangeBase != wantBase || len(quarter.Bars) == 0 {
+		t.Fatalf("3M %+v want base %v", quarter, wantBase)
+	}
+
+	rec = get("&range=nope")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status %d", rec.Code)
 	}

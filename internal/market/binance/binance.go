@@ -336,12 +336,19 @@ func ParseOHLC(data []byte) ([]market.IntradayBar, error) {
 		if !okT || !ok1 || !ok2 || !ok3 || !ok4 || cl == 0 {
 			continue
 		}
+		vol := 0.0
+		if len(row) > 5 {
+			if v, ok := asFloat(row[5]); ok {
+				vol = v
+			}
+		}
 		out = append(out, market.IntradayBar{
 			OpenUnix: time.UnixMilli(openMS).Unix(),
 			Open:     op,
 			High:     hi,
 			Low:      lo,
 			Close:    cl,
+			Volume:   vol,
 		})
 	}
 	return out, nil

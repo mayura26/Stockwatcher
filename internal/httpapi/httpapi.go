@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"stockwatcher/internal/config"
 	"stockwatcher/internal/market"
@@ -386,55 +387,75 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	res := r.URL.Query().Get("resolution")
-	if res == "" {
-		res = "D"
+	rng := r.URL.Query().Get("range")
+	if rng == "" {
+		rng = "D"
 	}
-	if res != "5m" && res != "1H" && res != "4H" && res != "D" && res != "W" && res != "M" {
-		writeErr(w, http.StatusBadRequest, "resolution must be 5m, 1H, 4H, D, W, or M")
+	span, ok := market.LookupSpan(rng)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "range must be D, 3D, 1W, 1M, 3M, 6M, YTD, 1Y, or 5Y")
 		return
 	}
 	sym, err := s.Store.Symbol(r.Context(), id)
 	if mapErr(w, err) {
 		return
 	}
-	if res == "5m" || res == "1H" || res == "4H" {
-		candles, err := s.Sync.Candles(r.Context(), sym.AssetClass, sym.ProviderSymbol, res)
+	var candles []market.Candle
+	if span.Intraday() {
+		candles, err = s.Sync.SpanCandles(r.Context(), sym.ID, rng)
 		if err != nil {
-			slog.Error("intraday chart", "symbol", sym.Display, "resolution", res, "err", err)
+			slog.Error("intraday chart", "symbol", sym.Display, "range", rng, "err", err)
 			writeErr(w, http.StatusBadGateway, "history unavailable")
 			return
 		}
-		s.writeBars(w, r, sym, res, candles)
-		return
-	}
-	n, err := s.Store.BarCount(r.Context(), id)
-	if mapErr(w, err) {
-		return
-	}
-	if n == 0 {
-		if err := s.Sync.Backfill(r.Context(), id); err != nil {
-			slog.Error("chart backfill", "symbol", sym.Display, "err", err)
-			writeErr(w, http.StatusBadGateway, "history unavailable")
+	} else {
+		n, err := s.Store.BarCount(r.Context(), id)
+		if mapErr(w, err) {
 			return
 		}
+		if n == 0 {
+			if err := s.Sync.Backfill(r.Context(), id); err != nil {
+				slog.Error("chart backfill", "symbol", sym.Display, "err", err)
+				writeErr(w, http.StatusBadGateway, "history unavailable")
+				return
+			}
+		}
+		bars, err := s.Store.Bars(r.Context(), id)
+		if mapErr(w, err) {
+			return
+		}
+		candles = market.DailyCandles(sym.AssetClass, rng, bars, time.Now())
 	}
-	bars, err := s.Store.Bars(r.Context(), id)
-	if mapErr(w, err) {
-		return
-	}
-	s.writeBars(w, r, sym, res, market.Rollup(bars, res))
+	s.writeBars(w, r, sym, rng, candles)
 }
 
-func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, res string, candles []market.Candle) {
-	var price, changeD, extPct *float64
+func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, rng string, candles []market.Candle) {
+	var price, changeD, extPct, change, base *float64
 	var extSession string
+	now := time.Now()
+	daily, _ := s.Store.Bars(r.Context(), sym.ID)
 	if q, err := s.Store.Quote(r.Context(), sym.ID); err == nil {
 		v := q.Price
 		price = &v
 		changeD = q.ChangeD
 		extSession = q.ExtSession
 		extPct = q.ExtPct
+		if rng == "D" {
+			change = q.ChangeD
+			base = q.PrevClose
+		} else if q.Price > 0 {
+			pct, b := market.RangeMove(sym.AssetClass, rng, q.Price, daily, now)
+			change = pct
+			if b > 0 {
+				base = &b
+			}
+		}
+	}
+	if base == nil && rng != "D" {
+		if b, ok := market.RangeBase(sym.AssetClass, rng, daily, now); ok && b > 0 {
+			v := b
+			base = &v
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"symbol": map[string]any{
@@ -448,8 +469,10 @@ func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Sym
 			"ext_session":     extSession,
 			"ext_pct":         extPct,
 		},
-		"resolution": res,
-		"bars":       candles,
+		"range":       rng,
+		"change":      change,
+		"change_base": base,
+		"bars":        candles,
 	})
 }
 

@@ -180,7 +180,29 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureFacts(); err != nil {
 		return err
 	}
-	return s.ensureLogos()
+	if err := s.ensureLogos(); err != nil {
+		return err
+	}
+	return s.ensureIntraday()
+}
+
+// ensureIntraday stores 15-minute and hourly candles. Closed bars are kept.
+// The open bar is replaced on the next tail fetch.
+func (s *Store) ensureIntraday() error {
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS intraday (
+  symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  interval TEXT NOT NULL CHECK (interval IN ('15m','60m')),
+  open_unix INTEGER NOT NULL,
+  open REAL NOT NULL,
+  high REAL NOT NULL,
+  low REAL NOT NULL,
+  close REAL NOT NULL,
+  volume REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (symbol_id, interval, open_unix)
+);
+CREATE INDEX IF NOT EXISTS idx_intraday_symbol ON intraday(symbol_id, interval, open_unix)`)
+	return err
 }
 
 // ensureRanges stores the expected band for the last completed session.
@@ -1202,6 +1224,64 @@ ON CONFLICT(symbol_id, day) DO UPDATE SET
 	return tx.Commit()
 }
 
+// IntradayBars returns stored candles at or after since, ordered by open time.
+func (s *Store) IntradayBars(ctx context.Context, symbolID int64, interval string, since int64) ([]market.IntradayBar, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT open_unix, open, high, low, close, volume
+FROM intraday
+WHERE symbol_id = ? AND interval = ? AND open_unix >= ?
+ORDER BY open_unix`, symbolID, interval, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var bars []market.IntradayBar
+	for rows.Next() {
+		var b market.IntradayBar
+		if err := rows.Scan(&b.OpenUnix, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); err != nil {
+			return nil, err
+		}
+		bars = append(bars, b)
+	}
+	return bars, rows.Err()
+}
+
+// UpsertIntraday writes candles for one interval. The open bar is replaced.
+func (s *Store) UpsertIntraday(ctx context.Context, symbolID int64, interval string, bars []market.IntradayBar) error {
+	if len(bars) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO intraday(symbol_id, interval, open_unix, open, high, low, close, volume)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(symbol_id, interval, open_unix) DO UPDATE SET
+  open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close, volume = excluded.volume`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, b := range bars {
+		if b.OpenUnix <= 0 || b.Close == 0 {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, symbolID, interval, b.OpenUnix, b.Open, b.High, b.Low, b.Close, b.Volume); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PruneIntraday drops candles older than the retention window.
+func (s *Store) PruneIntraday(ctx context.Context, symbolID int64, interval string, before int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM intraday WHERE symbol_id = ? AND interval = ? AND open_unix < ?`, symbolID, interval, before)
+	return err
+}
+
 // Range is the cached expected band for one symbol.
 type Range struct {
 	SymbolID   int64
@@ -1345,6 +1425,43 @@ func (s *Store) Logo(ctx context.Context, symbolID int64) (Logo, error) {
 	}
 	logo.MediaType = media.String
 	return logo, nil
+}
+
+// HasLogo reports whether an image is already stored for the symbol.
+func (s *Store) HasLogo(ctx context.Context, symbolID int64) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM symbol_logos WHERE symbol_id = ? AND body IS NOT NULL`, symbolID).Scan(&n)
+	return n > 0, err
+}
+
+// TouchLogo moves the check time and leaves the stored image in place.
+func (s *Store) TouchLogo(ctx context.Context, symbolID int64, checkedAt int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE symbol_logos SET checked_at = ? WHERE symbol_id = ?`, checkedAt, symbolID)
+	return err
+}
+
+// StoredLogosBefore is every symbol with an image last checked before before.
+// Oldest checks come first.
+func (s *Store) StoredLogosBefore(ctx context.Context, before int64) ([]Symbol, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, s.asset_class, s.display, s.provider_symbol, s.name
+FROM symbols s
+JOIN symbol_logos l ON l.symbol_id = s.id
+WHERE l.body IS NOT NULL AND l.checked_at < ?
+ORDER BY l.checked_at, s.id`, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Symbol
+	for rows.Next() {
+		var sym Symbol
+		if err := rows.Scan(&sym.ID, &sym.AssetClass, &sym.Display, &sym.ProviderSymbol, &sym.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, sym)
+	}
+	return out, rows.Err()
 }
 
 // SymbolsNeedingLogo is every symbol with no cached mark, or a miss older than olderThan.

@@ -82,6 +82,7 @@ type IntradayBar struct {
 	OpenUnix        int64
 	Open, High, Low float64
 	Close           float64
+	Volume          float64
 }
 
 // Hit is a search result the client can add to a group.
@@ -217,10 +218,19 @@ func ToCandles(bars []IntradayBar) []Candle {
 	return out
 }
 
+// Fold2H groups hourly bars into UTC blocks on even hours.
+func Fold2H(bars []IntradayBar) []Candle { return FoldStep(bars, 2*3600) }
+
 // Fold4H groups hourly bars into UTC blocks at 00:00, 04:00, 08:00, 12:00, 16:00, and 20:00.
 // A bar that starts inside a block joins that block.
-func Fold4H(bars []IntradayBar) []Candle {
-	const step int64 = 4 * 3600
+func Fold4H(bars []IntradayBar) []Candle { return FoldStep(bars, 4*3600) }
+
+// FoldStep groups intraday bars into UTC blocks of step seconds.
+// A bar that starts inside a block joins that block.
+func FoldStep(bars []IntradayBar, step int64) []Candle {
+	if step <= 0 {
+		return ToCandles(bars)
+	}
 	ordered := append([]IntradayBar(nil), bars...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].OpenUnix < ordered[j].OpenUnix })
 	out := make([]Candle, 0, len(ordered)/4+1)

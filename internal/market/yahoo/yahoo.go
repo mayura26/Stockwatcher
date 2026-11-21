@@ -71,10 +71,26 @@ func (c *Client) Intraday(ctx context.Context, symbol string, prepost bool) ([]m
 	return ParseIntraday(body)
 }
 
-// Candles loads unadjusted intraday OHLC. interval is 5m or 60m. rng is a Yahoo range such as 60d or 2y.
+// Candles loads unadjusted intraday OHLC. interval is 15m or 60m. rng is a Yahoo range such as 5d or 60d.
 func (c *Client) Candles(ctx context.Context, symbol, interval, rng string) ([]market.IntradayBar, error) {
 	c.pace()
 	u := c.base() + "/v8/finance/chart/" + url.PathEscape(symbol) + "?range=" + url.QueryEscape(rng) + "&interval=" + url.QueryEscape(interval)
+	body, err := c.fetch(ctx, symbol, u)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCandles(body)
+}
+
+// CandlesSince loads unadjusted intraday OHLC from from through to.
+// from is inclusive so the forming bar already stored can be replaced.
+func (c *Client) CandlesSince(ctx context.Context, symbol, interval string, from, to time.Time) ([]market.IntradayBar, error) {
+	if to.Unix() <= from.Unix() {
+		to = from.Add(time.Second)
+	}
+	c.pace()
+	u := fmt.Sprintf("%s/v8/finance/chart/%s?period1=%d&period2=%d&interval=%s",
+		c.base(), url.PathEscape(symbol), from.Unix(), to.Unix(), url.QueryEscape(interval))
 	body, err := c.fetch(ctx, symbol, u)
 	if err != nil {
 		return nil, err
@@ -494,10 +510,11 @@ func ParseCandles(data []byte) ([]market.IntradayBar, error) {
 				Timestamp  []int64 `json:"timestamp"`
 				Indicators struct {
 					Quote []struct {
-						Open  []*float64 `json:"open"`
-						High  []*float64 `json:"high"`
-						Low   []*float64 `json:"low"`
-						Close []*float64 `json:"close"`
+						Open   []*float64 `json:"open"`
+						High   []*float64 `json:"high"`
+						Low    []*float64 `json:"low"`
+						Close  []*float64 `json:"close"`
+						Volume []*float64 `json:"volume"`
 					} `json:"quote"`
 				} `json:"indicators"`
 			} `json:"result"`
@@ -525,11 +542,11 @@ func ParseCandles(data []byte) ([]market.IntradayBar, error) {
 	}
 	res := env.Chart.Result[0]
 	var quote struct {
-		Open, High, Low, Close []*float64
+		Open, High, Low, Close, Volume []*float64
 	}
 	if len(res.Indicators.Quote) > 0 {
 		q := res.Indicators.Quote[0]
-		quote.Open, quote.High, quote.Low, quote.Close = q.Open, q.High, q.Low, q.Close
+		quote.Open, quote.High, quote.Low, quote.Close, quote.Volume = q.Open, q.High, q.Low, q.Close, q.Volume
 	}
 	out := make([]market.IntradayBar, 0, len(res.Timestamp))
 	for i, ts := range res.Timestamp {
@@ -537,12 +554,17 @@ func ParseCandles(data []byte) ([]market.IntradayBar, error) {
 		if cl == nil || *cl == 0 {
 			continue
 		}
+		vol := 0.0
+		if v := at(quote.Volume, i); v != nil {
+			vol = *v
+		}
 		out = append(out, market.IntradayBar{
 			OpenUnix: barStart(ts).Unix(),
 			Open:     or(at(quote.Open, i), *cl),
 			High:     or(at(quote.High, i), *cl),
 			Low:      or(at(quote.Low, i), *cl),
 			Close:    *cl,
+			Volume:   vol,
 		})
 	}
 	return out, nil
