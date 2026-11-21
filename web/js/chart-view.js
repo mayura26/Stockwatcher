@@ -26,6 +26,8 @@ class SwChart extends HTMLElement {
     this.alertLines = [];
     this.previewPrice = null;
     this.previewLine = null;
+    this.userRanged = false;
+    this.applyingWindow = false;
     this.innerHTML = `
       <div class="chart-screen">
         <header class="top">
@@ -102,6 +104,7 @@ class SwChart extends HTMLElement {
       const res = event.target.closest('[data-res]');
       if (res && res.dataset.res !== this.resolution) {
         this.resolution = res.dataset.res;
+        this.userRanged = false;
         this.syncPressed();
         this.loadBars();
       }
@@ -137,6 +140,7 @@ class SwChart extends HTMLElement {
       if (level) level.value = '';
       this.destroyChart();
       this.chartIntra = false;
+      this.userRanged = false;
       this.syncPressed();
     }
     if (!this.payload || this.payload.resolution !== this.resolution) await this.loadBars();
@@ -237,7 +241,15 @@ class SwChart extends HTMLElement {
           horzLines: { color: 'rgba(232,224,204,0.06)' },
         },
         rightPriceScale: { borderColor: 'rgba(232,224,204,0.12)' },
-        timeScale: { borderColor: 'rgba(232,224,204,0.12)', rightOffset: 2, fixRightEdge: true },
+        localization: { timeFormatter: (time) => crosshairLabel(time) },
+        timeScale: {
+          borderColor: 'rgba(232,224,204,0.12)',
+          rightOffset: 2,
+          fixRightEdge: true,
+          secondsVisible: false,
+          timeVisible: intradayRes(this.resolution),
+          tickMarkFormatter: (time, type) => tickLabel(time, type, LW.TickMarkType),
+        },
         crosshair: {
           vertLine: { color: 'rgba(198,161,91,0.5)', labelBackgroundColor: '#1c1f17' },
           horzLine: { color: 'rgba(198,161,91,0.5)', labelBackgroundColor: '#1c1f17' },
@@ -253,37 +265,46 @@ class SwChart extends HTMLElement {
         if (price == null) return;
         this.rememberLevel(price, true);
       });
+      this.bindTimeScale();
     }
-    if (this.series) {
-      this.chart.removeSeries(this.series);
-      this.series = null;
-      this.alertLines = [];
-      this.previewLine = null;
-    }
+    const kept = this.userRanged ? this.chart.timeScale().getVisibleLogicalRange() : null;
     const bars = this.payload?.bars || [];
     const last = bars[bars.length - 1].close;
     const format = priceFormat(last);
-    if (this.kind === 'line') {
-      this.series = this.chart.addSeries(LW.LineSeries, {
-        color: '#c6a15b',
-        lineWidth: 2,
-        priceLineVisible: false,
-        priceFormat: format,
+    this.withWindow(() => {
+      if (this.series) {
+        this.chart.removeSeries(this.series);
+        this.series = null;
+        this.alertLines = [];
+        this.previewLine = null;
+      }
+      if (this.kind === 'line') {
+        this.series = this.chart.addSeries(LW.LineSeries, {
+          color: '#c6a15b',
+          lineWidth: 2,
+          priceLineVisible: false,
+          priceFormat: format,
+        });
+        this.series.setData(bars.map((b) => ({ time: b.time, value: b.close })));
+      } else {
+        this.series = this.chart.addSeries(LW.CandlestickSeries, {
+          upColor: '#8eae8a',
+          downColor: '#c56b52',
+          borderVisible: false,
+          wickUpColor: '#8eae8a',
+          wickDownColor: '#c56b52',
+          priceLineVisible: false,
+          priceFormat: format,
+        });
+        this.series.setData(bars);
+      }
+      this.chart.timeScale().applyOptions({
+        timeVisible: intradayRes(this.resolution),
+        secondsVisible: false,
       });
-      this.series.setData(bars.map((b) => ({ time: b.time, value: b.close })));
-    } else {
-      this.series = this.chart.addSeries(LW.CandlestickSeries, {
-        upColor: '#8eae8a',
-        downColor: '#c56b52',
-        borderVisible: false,
-        wickUpColor: '#8eae8a',
-        wickDownColor: '#c56b52',
-        priceLineVisible: false,
-        priceFormat: format,
-      });
-      this.series.setData(bars);
-    }
-    showWindow(this.chart, bars, this.resolution, this.payload?.symbol?.asset_class);
+      if (kept) this.chart.timeScale().setVisibleLogicalRange(kept);
+    });
+    if (!kept) this.fitWindow();
     this.drawAlertLines();
     this.syncPreviewLine();
   }
@@ -354,6 +375,66 @@ class SwChart extends HTMLElement {
     if (el) el.textContent = text || '';
   }
 
+  bindTimeScale() {
+    const scale = this.chart.timeScale();
+    scale.subscribeVisibleLogicalRangeChange(() => {
+      if (this.applyingWindow || this.holdingRange) return;
+      this.rangeChanged = true;
+      queueMicrotask(() => this.settleRange());
+    });
+    scale.subscribeSizeChange(() => {
+      this.holdRange();
+      this.sizeChanged = true;
+      queueMicrotask(() => this.settleRange());
+    });
+  }
+
+  // A resize notifies the visible range on a later frame. Ignore that so it does not count as a zoom.
+  holdRange() {
+    const token = (this.holdToken = (this.holdToken || 0) + 1);
+    this.holdingRange = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (this.holdToken === token) this.holdingRange = false;
+    }));
+  }
+
+  settleRange() {
+    if (this.applyingWindow) return;
+    const sized = this.sizeChanged;
+    const ranged = this.rangeChanged;
+    if (!sized && !ranged) return;
+    this.sizeChanged = false;
+    this.rangeChanged = false;
+    if (ranged && !sized) {
+      this.userRanged = true;
+      return;
+    }
+    if (!this.userRanged) this.fitWindow();
+  }
+
+  withWindow(fn) {
+    this.applyingWindow = true;
+    try {
+      fn();
+    } finally {
+      this.applyingWindow = false;
+    }
+  }
+
+  fitWindow() {
+    if (!this.chart || this.hidden || !this.isConnected) return;
+    const bars = this.payload?.bars || [];
+    if (!bars.length) return;
+    if (!this.chart.timeScale().width()) {
+      requestAnimationFrame(() => this.fitWindow());
+      return;
+    }
+    this.holdRange();
+    this.withWindow(() => showWindow(this.chart, bars));
+    this.rangeChanged = false;
+    this.sizeChanged = false;
+  }
+
   close() { this.destroyChart(); }
 
   destroyChart() {
@@ -373,56 +454,62 @@ function intradayRes(res) {
   return res === '5m' || res === '1H' || res === '4H';
 }
 
-// Days of history shown when a resolution opens. Older bars stay loaded and can be scrolled in.
-const WINDOW_DAYS = { '5m': 1, '1H': 7, '4H': 31, D: 365, W: 365 * 5, M: 365 * 10 };
+// Pixels per candle when a resolution opens. The visible count follows the plot width.
+const OPEN_SPACING = 5;
 
-function showWindow(chart, bars, resolution, assetClass) {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function showWindow(chart, bars) {
   const width = chart.timeScale().width();
-  if (!width) {
-    requestAnimationFrame(() => showWindow(chart, bars, resolution, assetClass));
-    return;
-  }
-  const count = Math.min(bars.length, windowCount(bars, resolution, assetClass));
-  const spacing = Math.min(14, Math.max(1, (width - 4) / count));
-  chart.timeScale().applyOptions({ barSpacing: spacing });
+  const count = Math.min(bars.length, Math.max(1, Math.round(width / OPEN_SPACING)));
+  chart.timeScale().applyOptions({ barSpacing: OPEN_SPACING });
   const last = bars.length - 1;
   chart.timeScale().setVisibleLogicalRange({ from: last - count + 1, to: last });
 }
 
-function windowCount(bars, resolution, assetClass) {
-  const last = bars[bars.length - 1].time;
-  if (resolution === '5m' && assetClass !== 'crypto' && typeof last === 'number') {
-    const day = nyDay(last);
-    let n = 0;
-    for (let i = bars.length - 1; i >= 0; i--) {
-      if (nyDay(bars[i].time) !== day) break;
-      n++;
-    }
-    return Math.max(n, 1);
+function tickLabel(time, type, marks) {
+  const parts = timeParts(time);
+  if (!parts) return null;
+  const month = MONTHS[parts.month - 1] || '';
+  if (type === marks.Year) return String(parts.year);
+  if (type === marks.Month) return parts.month === 1 ? `Jan ${parts.year}` : month;
+  if (type === marks.Time || type === marks.TimeWithSeconds) {
+    return parts.intraday ? clock(parts) : `${parts.day} ${month}`;
   }
-  const days = WINDOW_DAYS[resolution] || 365;
-  const cutoff = typeof last === 'number' ? last - days * 86400 : shiftDay(last, -days);
-  let n = 0;
-  for (let i = bars.length - 1; i >= 0; i--) {
-    if (bars[i].time < cutoff) break;
-    n++;
-  }
-  return Math.max(n, 1);
+  return `${parts.day} ${month}`;
 }
 
-function nyDay(unix) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date(unix * 1000));
+function crosshairLabel(time) {
+  const parts = timeParts(time);
+  if (!parts) return '';
+  const month = MONTHS[parts.month - 1] || '';
+  if (parts.intraday) return `${parts.day} ${month} ${clock(parts)}`;
+  return `${parts.day} ${month} ${parts.year}`;
 }
 
-function shiftDay(day, delta) {
-  const t = new Date(day + 'T00:00:00Z');
-  t.setUTCDate(t.getUTCDate() + delta);
-  return t.toISOString().slice(0, 10);
+function timeParts(time) {
+  if (typeof time === 'number' && Number.isFinite(time)) {
+    const date = new Date(time * 1000);
+    return {
+      year: date.getFullYear(),
+      month: date.getMonth() + 1,
+      day: date.getDate(),
+      hour: date.getHours(),
+      minute: date.getMinutes(),
+      intraday: true,
+    };
+  }
+  if (time && typeof time === 'object' && time.year) {
+    return { year: time.year, month: time.month, day: time.day, intraday: false };
+  }
+  if (typeof time !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(time);
+  if (!match) return null;
+  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]), intraday: false };
+}
+
+function clock(parts) {
+  return `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
 }
 
 function levelInput(n) {
