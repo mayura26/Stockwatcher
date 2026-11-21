@@ -1,4 +1,4 @@
-const CACHE = 'stockwatcher-v2';
+const CACHE = 'stockwatcher-v3';
 const SHELL = [
   '/',
   '/css/app.css',
@@ -10,8 +10,9 @@ const SHELL = [
   '/js/search.js',
   '/js/alerts.js',
   '/manifest.webmanifest',
-  '/icon-192.png',
-  '/icon-512.png',
+  '/icon-192.png?v=3',
+  '/icon-512.png?v=3',
+  '/badge-96.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -59,8 +60,8 @@ self.addEventListener('push', (event) => {
     body: data.body,
     tag: data.alert_id ? 'alert-' + data.alert_id : 'stockwatcher',
     data,
-    icon: '/icon-192.png',
-    badge: '/icon-192.png',
+    icon: '/icon-192.png?v=3',
+    badge: '/badge-96.png',
   }));
 });
 
