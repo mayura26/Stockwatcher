@@ -1,5 +1,13 @@
 import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, repeatLabel } from './format.js';
 
+const RES_KEY = 'sw.resolution';
+const RESOLUTIONS = new Set(['5m', '1H', '4H', 'D', 'W', 'M']);
+
+function savedResolution() {
+  const saved = localStorage.getItem(RES_KEY);
+  return RESOLUTIONS.has(saved) ? saved : 'D';
+}
+
 let chartsPromise;
 
 function loadCharts() {
@@ -18,7 +26,7 @@ function loadCharts() {
 
 class SwChart extends HTMLElement {
   connectedCallback() {
-    this.resolution = 'D';
+    this.resolution = savedResolution();
     this.kind = 'candle';
     this.direction = 'above';
     this.repeat = 'once';
@@ -108,6 +116,7 @@ class SwChart extends HTMLElement {
       const res = event.target.closest('[data-res]');
       if (res && res.dataset.res !== this.resolution) {
         this.resolution = res.dataset.res;
+        localStorage.setItem(RES_KEY, this.resolution);
         this.userRanged = false;
         this.syncPressed();
         this.loadBars();
@@ -127,6 +136,7 @@ class SwChart extends HTMLElement {
       const del = event.target.closest('[data-delete-alert]');
       if (del) this.dispatchEvent(new CustomEvent('sw-action', { bubbles: true, detail: { type: 'delete-alert', id: Number(del.dataset.deleteAlert) } }));
     });
+    this.syncPressed();
   }
 
   async open(id) {
@@ -134,7 +144,6 @@ class SwChart extends HTMLElement {
     this.symbolId = id;
     if (changed) {
       this.payload = null;
-      this.resolution = 'D';
       this.kind = 'candle';
       this.direction = 'above';
       this.repeat = 'once';
