@@ -104,6 +104,34 @@ func TestStockSearchManualTickerWhenBothEmpty(t *testing.T) {
 	}
 }
 
+func TestIndexSearch(t *testing.T) {
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("search left the process")
+	}))
+	defer empty.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/search?class=index&q=tnx", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	searchHandler(t, empty.URL, empty.URL).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Hits []struct {
+			AssetClass     string `json:"asset_class"`
+			Display        string `json:"display"`
+			ProviderSymbol string `json:"provider_symbol"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Hits) != 1 || body.Hits[0].ProviderSymbol != "^TNX" || body.Hits[0].Display != "TNX" || body.Hits[0].AssetClass != "stock" {
+		t.Fatalf("%+v", body.Hits)
+	}
+}
+
 func searchHandler(t *testing.T, finnhubURL, yahooURL string) http.Handler {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))

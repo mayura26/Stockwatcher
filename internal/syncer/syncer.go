@@ -95,8 +95,8 @@ func (s *Syncer) RefreshQuote(ctx context.Context, id int64) error {
 		}
 		q = quote
 	case market.Stock:
-		if yahooListed(sym.ProviderSymbol) {
-			quote, _, err := s.storeYahooChart(ctx, id, sym.ProviderSymbol, true)
+		if market.YahooIndex(sym.ProviderSymbol) || yahooListed(sym.ProviderSymbol) {
+			quote, _, err := s.storeYahooChart(ctx, id, sym.ProviderSymbol, yahooAdjust(sym.ProviderSymbol))
 			if err != nil {
 				return err
 			}
@@ -141,7 +141,7 @@ func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *
 		if s.Yahoo == nil {
 			return
 		}
-		points, ext, err = s.Yahoo.Intraday(ctx, provider, class == market.Stock)
+		points, ext, err = s.Yahoo.Intraday(ctx, provider, class == market.Stock && !market.YahooIndex(provider))
 	case market.Crypto:
 		if s.Binance == nil {
 			return
@@ -156,7 +156,7 @@ func (s *Syncer) attachIntraday(ctx context.Context, class, provider string, q *
 	}
 	q.Intraday = points
 	q.IntradaySet = true
-	if class == market.Stock {
+	if class == market.Stock && !market.YahooIndex(provider) {
 		q.ExtSession = ext.Session
 		q.ExtPct = ext.Pct
 		q.ExtSet = true
@@ -358,11 +358,11 @@ func (s *Syncer) fetchBars(ctx context.Context, class, provider string, full boo
 	case market.Future:
 		return s.Yahoo.DailyBars(ctx, provider, false, full)
 	case market.Stock:
-		if yahooListed(provider) {
+		if market.YahooIndex(provider) || yahooListed(provider) {
 			if s.Yahoo == nil {
 				return nil, fmt.Errorf("yahoo unavailable")
 			}
-			return s.Yahoo.DailyBars(ctx, provider, true, full)
+			return s.Yahoo.DailyBars(ctx, provider, yahooAdjust(provider), full)
 		}
 		if s.stockCandles(ctx) {
 			return s.Finnhub.DailyBars(ctx, provider, full)
@@ -374,7 +374,13 @@ func (s *Syncer) fetchBars(ctx context.Context, class, provider string, full boo
 }
 
 func yahooListed(provider string) bool {
-	return strings.Contains(provider, ".")
+	return strings.Contains(provider, ".") && !market.YahooIndex(provider)
+}
+
+// yahooAdjust is false for an index, so a yield stays the printed level.
+// A dotted equity still scales OHLC by the adjusted close.
+func yahooAdjust(provider string) bool {
+	return !market.YahooIndex(provider)
 }
 
 func (s *Syncer) storeYahooChart(ctx context.Context, id int64, provider string, adjust bool) (market.Quote, bool, error) {
@@ -510,7 +516,7 @@ func (s *Syncer) RefreshFacts(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if sym.AssetClass != market.Stock || yahooListed(sym.ProviderSymbol) || s.Finnhub == nil || !s.Finnhub.Enabled() {
+	if sym.AssetClass != market.Stock || yahooListed(sym.ProviderSymbol) || market.YahooIndex(sym.ProviderSymbol) || s.Finnhub == nil || !s.Finnhub.Enabled() {
 		return nil
 	}
 	marketCap, pe, err := s.Finnhub.Metric(ctx, sym.ProviderSymbol)
@@ -535,7 +541,7 @@ func (s *Syncer) refreshStaleFact(ctx context.Context, symbols []store.TickSymbo
 	}
 	ids := make([]int64, 0, len(symbols))
 	for _, sym := range symbols {
-		if sym.AssetClass == market.Stock && !yahooListed(sym.ProviderSymbol) {
+		if sym.AssetClass == market.Stock && !yahooListed(sym.ProviderSymbol) && !market.YahooIndex(sym.ProviderSymbol) {
 			ids = append(ids, sym.ID)
 		}
 	}
@@ -598,7 +604,7 @@ func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) 
 		case market.Crypto:
 			cryptos = append(cryptos, sym)
 		case market.Stock:
-			if yahooListed(sym.ProviderSymbol) {
+			if market.YahooIndex(sym.ProviderSymbol) || yahooListed(sym.ProviderSymbol) {
 				yahooStocks = append(yahooStocks, sym)
 			} else {
 				stocks = append(stocks, sym)
@@ -612,7 +618,7 @@ func (s *Syncer) refreshQuotes(ctx context.Context, symbols []store.TickSymbol) 
 		}
 	}
 	for _, sym := range yahooStocks {
-		if err := s.pullYahoo(ctx, sym, true, quotes, barsTouched); err != nil {
+		if err := s.pullYahoo(ctx, sym, yahooAdjust(sym.ProviderSymbol), quotes, barsTouched); err != nil {
 			return nil, nil, err
 		}
 	}

@@ -8,6 +8,7 @@ class SwSearch extends HTMLElement {
           <div class="seg" role="group" aria-label="Asset class">
             <button type="button" data-class="stock" aria-pressed="true">Stocks</button>
             <button type="button" data-class="future" aria-pressed="false">Futures</button>
+            <button type="button" data-class="index" aria-pressed="false">Indexes</button>
             <button type="button" data-class="crypto" aria-pressed="false">Crypto</button>
           </div>
           <button type="button" class="text-btn" data-close>Close</button>
@@ -83,8 +84,14 @@ class SwSearch extends HTMLElement {
 }
 
 function yahooMark(hit) {
-  if (!hit || hit.asset_class !== 'stock' || !String(hit.provider_symbol || '').includes('.')) return '';
+  if (!yahooQuoted(hit)) return '';
   return '<span class="yahoo-mark">Yahoo</span>';
+}
+
+function yahooQuoted(row) {
+  if (!row || row.asset_class !== 'stock') return false;
+  const provider = String(row.provider_symbol || '');
+  return provider.startsWith('^') || provider.includes('.');
 }
 
 function escapeHTML(s) {

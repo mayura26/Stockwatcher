@@ -594,6 +594,14 @@ sw-search {
   animation: rise 180ms ease;
 }
 .search-head, .toggles { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.8rem 1rem 0.4rem; }
+.search-head .seg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.search-head .seg::-webkit-scrollbar { display: none; }
+.search-head .seg button { flex: 0 0 auto; padding: 0.35rem 0.42rem; font-size: 0.75rem; }
 .toggles { flex-wrap: wrap; }
 .range-scroll {
   flex: 1 1 auto;

@@ -48,6 +48,7 @@ func TestEnsureLogo(t *testing.T) {
 		return sym
 	}
 	future := add(market.Future, "ES", "ES=F", "E-mini")
+	index := add(market.Stock, "TNX", "^TNX", "10-Year Treasury Yield")
 	apple := add(market.Stock, "AAPL", "AAPL", "Apple")
 	none := add(market.Stock, "NONE", "NONE", "No logo")
 	html := add(market.Stock, "HTML", "HTML", "Bad type")
@@ -66,6 +67,15 @@ func TestEnsureLogo(t *testing.T) {
 	}
 	if _, err := st.Logo(ctx, future.ID); err != store.ErrNotFound {
 		t.Fatalf("future logo %v", err)
+	}
+	if err := sy.EnsureLogo(ctx, index.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Logo(ctx, index.ID); err != store.ErrNotFound {
+		t.Fatalf("index logo %v", err)
+	}
+	if requests != 0 {
+		t.Fatal("index logo was fetched")
 	}
 	if err := sy.EnsureLogo(ctx, coin.ID); err != nil {
 		t.Fatal(err)

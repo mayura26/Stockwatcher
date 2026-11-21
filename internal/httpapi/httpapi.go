@@ -311,6 +311,8 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	case market.Future:
 		hits = market.SearchFutures(q)
+	case "index":
+		hits = market.SearchIndexes(q)
 	case market.Crypto:
 		hits, err = s.Sync.Binance.Search(r.Context(), q)
 		if err != nil {
@@ -319,7 +321,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		writeErr(w, http.StatusBadRequest, "class must be stock, future, or crypto")
+		writeErr(w, http.StatusBadRequest, "class must be stock, future, crypto, or index")
 		return
 	}
 	if hits == nil {

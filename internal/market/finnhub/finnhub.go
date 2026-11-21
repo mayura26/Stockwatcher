@@ -58,7 +58,7 @@ func (c *Client) Quote(ctx context.Context, symbol string) (market.Quote, error)
 	return ParseQuote(body)
 }
 
-// Search returns US common stocks. Symbols with an exchange suffix are dropped.
+// Search returns US common stocks and ETFs. Symbols with an exchange suffix are dropped.
 func (c *Client) Search(ctx context.Context, q string) ([]market.Hit, error) {
 	if !c.Enabled() {
 		return nil, ErrNoKey
@@ -166,7 +166,7 @@ func ParseQuote(data []byte) (market.Quote, error) {
 	return market.Quote{Price: raw.C, PrevClose: raw.PC, DayPct: &dp, AsOf: asOf}, nil
 }
 
-// ParseSearch keeps US common stocks (no dot or colon in the symbol).
+// ParseSearch keeps US common stocks and ETFs (no dot or colon in the symbol).
 func ParseSearch(data []byte) ([]market.Hit, error) {
 	var raw struct {
 		Result []struct {
@@ -182,7 +182,7 @@ func ParseSearch(data []byte) ([]market.Hit, error) {
 	out := make([]market.Hit, 0, 20)
 	seen := map[string]bool{}
 	for _, r := range raw.Result {
-		if r.Type != "Common Stock" {
+		if r.Type != "Common Stock" && r.Type != "ETP" {
 			continue
 		}
 		sym := r.DisplaySymbol

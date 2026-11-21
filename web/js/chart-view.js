@@ -1,4 +1,4 @@
-import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, repeatLabel } from './format.js';
+import { crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, repeatLabel, yahooQuoted } from './format.js';
 
 const RANGE_KEY = 'sw.range';
 const RANGES = ['D', '3D', '1W', '1M', '3M', '6M', 'YTD', '1Y', '5Y'];
@@ -198,7 +198,7 @@ class SwChart extends HTMLElement {
     const shown = price ?? (bars.length ? bars[bars.length - 1].close : null);
     this.querySelector('[data-display]').textContent = sym.display || '';
     const yahoo = this.querySelector('[data-yahoo]');
-    if (yahoo) yahoo.hidden = !(sym.asset_class === 'stock' && String(sym.provider_symbol || '').includes('.'));
+    if (yahoo) yahoo.hidden = !yahooQuoted(sym);
     this.querySelector('[data-name]').textContent = sym.name || '';
     const px = this.querySelector('[data-price]');
     px.textContent = formatPrice(shown);

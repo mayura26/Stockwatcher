@@ -22,16 +22,17 @@ func TestParseQuote(t *testing.T) {
 }
 
 func TestParseSearchFiltersUSCommonStock(t *testing.T) {
-	raw := []byte(`{"count":3,"result":[
+	raw := []byte(`{"count":4,"result":[
 		{"description":"APPLE INC","displaySymbol":"AAPL","symbol":"AAPL","type":"Common Stock"},
 		{"description":"APPLE","displaySymbol":"APC.DE","symbol":"APC.DE","type":"Common Stock"},
-		{"description":"ETF","displaySymbol":"AAPLX","symbol":"AAPLX","type":"ETP"}
+		{"description":"SPDR S&P 500 ETF TRUST","displaySymbol":"SPY","symbol":"SPY","type":"ETP"},
+		{"description":"ETF","displaySymbol":"SPY.L","symbol":"SPY.L","type":"ETP"}
 	]}`)
 	hits, err := ParseSearch(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 1 || hits[0].ProviderSymbol != "AAPL" || hits[0].Name != "APPLE INC" {
+	if len(hits) != 2 || hits[0].ProviderSymbol != "AAPL" || hits[0].Name != "APPLE INC" || hits[1].ProviderSymbol != "SPY" {
 		t.Fatalf("%+v", hits)
 	}
 }

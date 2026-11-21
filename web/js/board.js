@@ -1,4 +1,4 @@
-import { formatClock, formatCompact, formatDay, formatPE, formatPct, formatPrice, pctClass } from './format.js';
+import { formatClock, formatCompact, formatDay, formatPE, formatPct, formatPrice, pctClass, yahooQuoted } from './format.js';
 
 const HOLD_MS = 400;
 const HOLD_SLOP = 10;
@@ -724,7 +724,7 @@ function monogram(display) {
 }
 
 function yahooMark(row) {
-  if (!row || row.asset_class !== 'stock' || !String(row.provider_symbol || '').includes('.')) return '';
+  if (!yahooQuoted(row)) return '';
   return '<span class="yahoo-mark">Yahoo</span>';
 }
 

@@ -1,6 +1,6 @@
 # Stockwatcher
 
-A private, mobile-first blotter for US stocks, CME futures, and crypto. The phone reads SQLite. Finnhub, Yahoo, and Binance are only touched by the server and by the scheduled tick.
+A private, mobile-first blotter for US stocks, CME futures, crypto, and Yahoo indexes such as Treasury yields and VIX. The phone reads SQLite. Finnhub, Yahoo, and Binance are only touched by the server and by the scheduled tick.
 
 ## Run locally
 
@@ -36,7 +36,7 @@ Scheduled task, every minute, inside the app container:
 su-exec 65532:65532 stockwatcher tick
 ```
 
-Run it as uid 65532 so the tick and the server share the SQLite file. The task evaluates price crosses and sends Web Push. Futures quotes come from Yahoo and are delayed about 10–15 minutes, so futures alerts fire on that delay. Crypto is Binance. US stock quotes are Finnhub.
+Run it as uid 65532 so the tick and the server share the SQLite file. The task evaluates price crosses and sends Web Push. Futures and Yahoo indexes (Treasury yields, VIX) come from Yahoo and are delayed about 10–15 minutes, so those alerts fire on that delay. Crypto is Binance. US stock quotes, including ETFs such as SPY and QQQ, are Finnhub.
 
 Health check: `GET /healthz`.
 

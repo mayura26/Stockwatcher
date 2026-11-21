@@ -49,7 +49,7 @@ func (s *Syncer) httpClient() *http.Client {
 }
 
 // EnsureLogo fetches one mark and stores it. A stored image is left alone.
-// Futures are recorded as a miss without a request.
+// Futures and Yahoo indexes are recorded as a miss without a request.
 func (s *Syncer) EnsureLogo(ctx context.Context, id int64) error {
 	if ok, err := s.Store.HasLogo(ctx, id); err != nil {
 		return err
@@ -64,6 +64,9 @@ func (s *Syncer) EnsureLogo(ctx context.Context, id int64) error {
 	case market.Future:
 		return s.Store.PutLogo(ctx, id, nil, "", s.now().Unix())
 	case market.Stock:
+		if market.YahooIndex(sym.ProviderSymbol) {
+			return s.Store.PutLogo(ctx, id, nil, "", s.now().Unix())
+		}
 		return s.ensureStockLogo(ctx, sym)
 	case market.Crypto:
 		return s.ensureCryptoLogo(ctx, sym)
@@ -155,7 +158,11 @@ func (s *Syncer) refreshLogos(ctx context.Context) (int, error) {
 	for _, sym := range need {
 		switch sym.AssetClass {
 		case market.Stock:
-			stocks = append(stocks, sym)
+			if market.YahooIndex(sym.ProviderSymbol) {
+				futures = append(futures, sym)
+			} else {
+				stocks = append(stocks, sym)
+			}
 		case market.Crypto:
 			cryptos = append(cryptos, sym)
 		default:
@@ -295,6 +302,9 @@ func (s *Syncer) recheckLogo(ctx context.Context, sym store.Symbol) error {
 	var err error
 	switch sym.AssetClass {
 	case market.Stock:
+		if market.YahooIndex(sym.ProviderSymbol) {
+			return s.Store.TouchLogo(ctx, sym.ID, s.now().Unix())
+		}
 		body, media, err = s.pullStockLogo(ctx, sym)
 	case market.Crypto:
 		body, media, err = s.pullCryptoLogo(ctx, sym)

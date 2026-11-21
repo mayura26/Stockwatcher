@@ -1,3 +1,9 @@
+export function yahooQuoted(row) {
+  if (!row || row.asset_class !== 'stock') return false;
+  const provider = String(row.provider_symbol || '');
+  return provider.startsWith('^') || provider.includes('.');
+}
+
 export function formatPrice(n) {
   if (n == null || Number.isNaN(Number(n))) return '—';
   const v = Number(n);

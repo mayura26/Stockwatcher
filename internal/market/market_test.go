@@ -368,3 +368,40 @@ func TestSearchFutures(t *testing.T) {
 		t.Fatalf("missing manual symbol %+v", custom)
 	}
 }
+
+func TestSearchIndexes(t *testing.T) {
+	all := SearchIndexes("")
+	if len(all) != len(Indexes) || len(all) == 0 {
+		t.Fatalf("curated list %d", len(all))
+	}
+	if all[0].AssetClass != Stock {
+		t.Fatalf("class %s", all[0].AssetClass)
+	}
+	tnx := SearchIndexes("tnx")
+	if len(tnx) != 1 || tnx[0].ProviderSymbol != "^TNX" || tnx[0].Display != "TNX" {
+		t.Fatalf("%+v", tnx)
+	}
+	vix := SearchIndexes("vix")
+	sawVIX := false
+	for _, h := range vix {
+		if h.ProviderSymbol == "^VIX" {
+			sawVIX = true
+		}
+	}
+	if !sawVIX {
+		t.Fatalf("%+v", vix)
+	}
+	yield := SearchIndexes("10-year")
+	if len(yield) != 1 || yield[0].ProviderSymbol != "^TNX" {
+		t.Fatalf("%+v", yield)
+	}
+	if got := SearchIndexes("^VIX9D"); len(got) != 0 {
+		t.Fatalf("invented %+v", got)
+	}
+	if got := SearchIndexes("SPX"); len(got) != 0 {
+		t.Fatalf("invented %+v", got)
+	}
+	if !YahooIndex("^TNX") || !YahooIndex("dx-y.nyb") || YahooIndex("AAPL") || YahooIndex("005930.KS") {
+		t.Fatal("YahooIndex")
+	}
+}

@@ -80,7 +80,7 @@ class SwApp extends HTMLElement {
       <form class="gate">
         <h1>Stockwatcher</h1>
         <hr class="rule">
-        <p class="lede">A private blotter for stocks, CME futures, and crypto.</p>
+        <p class="lede">A private blotter for stocks, CME futures, crypto, and Yahoo indexes.</p>
         <label class="field">Access token
           <input type="password" name="token" autocomplete="current-password" required>
         </label>
