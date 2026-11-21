@@ -199,8 +199,8 @@ class SwBoard extends HTMLElement {
           ? rows.map((row, i) => this.cardHTML(row, i, rows, true)).join('')
           : '<p class="empty fold-empty">Nothing in this group.</p>';
       }
-      return `<section class="fold${shut ? ' is-shut' : ''}">
-        <button type="button" class="fold-h" data-fold="${group.id}" aria-expanded="${shut ? 'false' : 'true'}" style="--chip:${chipColor(group.color)}">
+      return `<section class="fold${shut ? ' is-shut' : ''}" style="--chip:${chipColor(group.color)}">
+        <button type="button" class="fold-h" data-fold="${group.id}" aria-expanded="${shut ? 'false' : 'true'}">
           <span class="chip-icon">${iconSVG(group.icon)}</span>
           <span class="fold-name">${escapeHTML(group.name)}</span>
           <span class="fold-mark" aria-hidden="true"></span>

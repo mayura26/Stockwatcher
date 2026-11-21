@@ -338,13 +338,18 @@ sw-app, sw-board, sw-search, sw-chart, sw-alerts { display: block; }
 }
 .own.is-on { color: var(--brass); }
 .own svg { width: 0.85rem; height: 0.85rem; }
+.fold {
+  margin-top: 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--chip, var(--brass)) 55%, var(--line));
+}
+.fold .row { padding-left: 0.5rem; padding-right: 0.5rem; }
+.fold .row:last-child { border-bottom: 0; }
 .fold-h {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   width: 100%;
   min-height: 32px;
-  margin-top: 0.85rem;
   padding: 0.4rem 0.5rem;
   color: var(--muted);
   font-size: 0.68rem;
