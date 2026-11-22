@@ -1,8 +1,12 @@
 package yahoo
 
 import (
+	"context"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +180,56 @@ func TestParseSearchKeepsEquityAndETF(t *testing.T) {
 	}
 	if len([]rune(cut[0].Name)) != 80 || !strings.HasSuffix(cut[0].Name, " · KSE") {
 		t.Fatalf("truncated %q (%d)", cut[0].Name, len([]rune(cut[0].Name)))
+	}
+}
+
+func TestParseFacts(t *testing.T) {
+	rawDay := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	body := []byte(`{"quoteSummary":{"result":[{
+		"price":{"marketCap":{"raw":3500000000000}},
+		"summaryDetail":{"marketCap":{"raw":1},"trailingPE":-4},
+		"defaultKeyStatistics":{"trailingPE":{"raw":15.5},"netIncomeToCommon":{"raw":-2500000000}},
+		"financialData":{"totalRevenue":303000000000},
+		"calendarEvents":{"earnings":{"earningsDate":[
+			{"fmt":"2025-12-01"},
+			{"raw":` + strconv.FormatInt(rawDay, 10) + `,"fmt":"2026-04-02"},
+			{"fmt":"2026-06-01"}
+		]}}
+	}],"error":null}}`)
+	cap, pe, rev, earn, date, err := ParseFacts(body, "2026-01-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap == nil || *cap != 3500000000000 || pe == nil || *pe != 15.5 || rev == nil || *rev != 303000000000 || earn == nil || *earn != -2500000000 || date != "2026-04-02" {
+		t.Fatalf("cap %v pe %v rev %v earn %v date %s", cap, pe, rev, earn, date)
+	}
+
+	cap, pe, rev, earn, date, err = ParseFacts([]byte(`{"quoteSummary":{"result":[{"calendarEvents":{"earnings":{"earningsDate":{"raw":`+strconv.FormatInt(time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)+`}}}}],"error":null}}`), "2026-01-15")
+	if err != nil || date != "2026-02-01" || cap != nil || pe != nil || rev != nil || earn != nil {
+		t.Fatalf("cap %v pe %v rev %v earn %v date %s err %v", cap, pe, rev, earn, date, err)
+	}
+	if _, _, _, _, _, err = ParseFacts([]byte(`{"quoteSummary":{"result":null,"error":{"description":"Quote not found"}}}`), "2026-01-15"); err == nil || err.Error() != "Quote not found" {
+		t.Fatal(err)
+	}
+}
+
+func TestFactsUsesBaseWithoutCrumb(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RequestURI()
+		_, _ = w.Write([]byte(`{"quoteSummary":{"result":[{"price":{"marketCap":{"raw":80}},"summaryDetail":{"trailingPE":{"raw":4.5}},"financialData":{"totalRevenue":{"raw":9}},"defaultKeyStatistics":{"netIncomeToCommon":{"raw":-1}},"calendarEvents":{"earnings":{"earningsDate":[{"fmt":"2026-06-01"}]}}}],"error":null}}`))
+	}))
+	defer srv.Close()
+	c := &Client{Base: srv.URL, HTTP: srv.Client()}
+	cap, pe, rev, earn, date, hour, err := c.Facts(context.Background(), "NBIS", time.Date(2026, 1, 15, 18, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "crumb=") || !strings.Contains(got, "/v10/finance/quoteSummary/NBIS") {
+		t.Fatal(got)
+	}
+	if cap == nil || *cap != 80 || pe == nil || *pe != 4.5 || rev == nil || *rev != 9 || earn == nil || *earn != -1 || date != "2026-06-01" || hour != "" {
+		t.Fatalf("cap %v pe %v rev %v earn %v date %s hour %q", cap, pe, rev, earn, date, hour)
 	}
 }
 

@@ -30,6 +30,10 @@ func TestYahooStockQuoteSkipsFinnhub(t *testing.T) {
 		mu.Lock()
 		yahooSyms = append(yahooSyms, r.URL.Path)
 		mu.Unlock()
+		if strings.Contains(r.URL.Path, "quoteSummary") {
+			_, _ = w.Write([]byte(`{"quoteSummary":{"result":[{"price":{"marketCap":{"raw":100}}}],"error":null}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"chart":{"result":[{"meta":{"regularMarketPrice":78000,"previousClose":77000,"regularMarketTime":1700000000,"symbol":"005930.KS","regularMarketChangePercent":1.3},"timestamp":[1700000000],"indicators":{"quote":[{"open":[77000],"high":[78500],"low":[76000],"close":[78000],"volume":[10]}],"adjclose":[{"adjclose":[78000]}]}}],"error":null}}`))
 	}))
 	defer yh.Close()
@@ -53,8 +57,11 @@ func TestYahooStockQuoteSkipsFinnhub(t *testing.T) {
 	n, err := sy.refreshStaleFact(ctx, []store.TickSymbol{
 		{ID: ks.ID, AssetClass: market.Stock, ProviderSymbol: "005930.KS"},
 	})
-	if err != nil || n != 0 {
+	if err != nil || n != 1 {
 		t.Fatal(err, n)
+	}
+	if row := boardRow(t, st, "005930.KS"); row.MarketCap == nil || *row.MarketCap != 100 {
+		t.Fatalf("facts %+v", row)
 	}
 
 	quotes, touched, err := sy.refreshQuotes(ctx, []store.TickSymbol{

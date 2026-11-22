@@ -1,12 +1,17 @@
 package yahoo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,15 +21,24 @@ import (
 
 const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-// Client reads Yahoo's chart and search endpoints. Charts cover CME futures,
-// daily bars, and listings Finnhub does not quote. Search is the fallback
-// when a US stock query has no hits.
+const quoteSummaryModules = "price,summaryDetail,financialData,defaultKeyStatistics,calendarEvents"
+
+// Client reads Yahoo's chart, search, and quote-summary endpoints. Charts cover
+// CME futures, daily bars, and listings Finnhub does not quote. Search is the
+// fallback when a US stock query has no hits. Quote summary fills a company
+// fact Finnhub did not return.
 type Client struct {
 	HTTP *http.Client
 	Base string
 
 	mu   sync.Mutex
 	last time.Time
+
+	crumbMu sync.Mutex
+	crumb   string
+	jarOnce sync.Once
+	jarHTTP *http.Client
+	jarErr  error
 }
 
 func (c *Client) client() *http.Client {
@@ -161,6 +175,138 @@ func (c *Client) searchOnce(ctx context.Context, q string) ([]byte, error) {
 	c.pace()
 	u := c.base() + "/v1/finance/search?q=" + url.QueryEscape(q) + "&quotesCount=20&newsCount=0"
 	return c.fetch(ctx, q, u)
+}
+
+// Facts loads market cap, trailing P/E, TTM revenue, TTM net income, and the
+// next earnings date. hour is always empty: Yahoo does not say open or close.
+// A missing figure comes back nil. Cap and P/E are kept only when positive.
+func (c *Client) Facts(ctx context.Context, symbol string, now time.Time) (marketCap, pe, revenue, earnings *float64, date, hour string, err error) {
+	if c == nil {
+		return nil, nil, nil, nil, "", "", fmt.Errorf("yahoo unavailable")
+	}
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return nil, nil, nil, nil, "", "", fmt.Errorf("empty yahoo symbol")
+	}
+	body, err := c.quoteSummary(ctx, symbol)
+	if err != nil {
+		return nil, nil, nil, nil, "", "", err
+	}
+	marketCap, pe, revenue, earnings, date, err = ParseFacts(body, market.NYDay(now.Unix()))
+	return marketCap, pe, revenue, earnings, date, "", err
+}
+
+func (c *Client) quoteSummary(ctx context.Context, symbol string) ([]byte, error) {
+	path := "/v10/finance/quoteSummary/" + url.PathEscape(symbol) + "?modules=" + quoteSummaryModules
+	if c.Base != "" {
+		c.pace()
+		return c.fetch(ctx, symbol, c.base()+path)
+	}
+	body, status, err := c.quoteSummaryLive(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusUnauthorized {
+		c.forgetCrumb()
+		body, status, err = c.quoteSummaryLive(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if status == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("yahoo rate limit for %s", symbol)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("yahoo status %d for %s", status, symbol)
+	}
+	return body, nil
+}
+
+func (c *Client) quoteSummaryLive(ctx context.Context, path string) ([]byte, int, error) {
+	crumb, err := c.ensureCrumb(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	u := "https://query1.finance.yahoo.com" + path + "&crumb=" + url.QueryEscape(crumb)
+	return c.doJar(ctx, u, "application/json")
+}
+
+func (c *Client) ensureCrumb(ctx context.Context) (string, error) {
+	c.crumbMu.Lock()
+	defer c.crumbMu.Unlock()
+	if c.crumb != "" {
+		return c.crumb, nil
+	}
+	if _, _, err := c.doJar(ctx, "https://fc.yahoo.com", "*/*"); err != nil {
+		return "", err
+	}
+	// getcrumb is text/plain. Accept: application/json is a 406.
+	body, status, err := c.doJar(ctx, "https://query1.finance.yahoo.com/v1/test/getcrumb", "*/*")
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("yahoo crumb status %d", status)
+	}
+	crumb := strings.TrimSpace(string(body))
+	if strings.HasPrefix(crumb, `"`) {
+		if s, err := strconv.Unquote(crumb); err == nil {
+			crumb = s
+		}
+	}
+	if crumb == "" || strings.ContainsAny(crumb, "<{}\n ") {
+		return "", fmt.Errorf("yahoo crumb missing")
+	}
+	c.crumb = crumb
+	return crumb, nil
+}
+
+func (c *Client) forgetCrumb() {
+	c.crumbMu.Lock()
+	c.crumb = ""
+	c.crumbMu.Unlock()
+}
+
+func (c *Client) jarClient() (*http.Client, error) {
+	c.jarOnce.Do(func() {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			c.jarErr = err
+			return
+		}
+		c.jarHTTP = &http.Client{Timeout: 20 * time.Second, Jar: jar}
+	})
+	if c.jarErr != nil {
+		return nil, c.jarErr
+	}
+	return c.jarHTTP, nil
+}
+
+func (c *Client) doJar(ctx context.Context, u, accept string) ([]byte, int, error) {
+	c.pace()
+	client, err := c.jarClient()
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("User-Agent", browserUA)
+	if accept == "" {
+		accept = "*/*"
+	}
+	req.Header.Set("Accept", accept)
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	if err != nil {
+		return nil, res.StatusCode, err
+	}
+	return body, res.StatusCode, nil
 }
 
 // ParseSearch keeps equities and ETFs. The symbol is the Yahoo listing, such as 005930.KS.
@@ -589,4 +735,171 @@ func or(v *float64, fallback float64) float64 {
 		return fallback
 	}
 	return *v
+}
+
+type yahooValue struct {
+	raw *float64
+	fmt string
+}
+
+func (v *yahooValue) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	if b[0] == '{' {
+		var obj struct {
+			Raw *float64 `json:"raw"`
+			Fmt string   `json:"fmt"`
+		}
+		if err := json.Unmarshal(b, &obj); err != nil {
+			return err
+		}
+		v.raw = obj.Raw
+		v.fmt = obj.Fmt
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	v.raw = &n
+	return nil
+}
+
+type yahooWhenList []yahooValue
+
+func (l *yahooWhenList) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	if b[0] == '[' {
+		var arr []yahooValue
+		if err := json.Unmarshal(b, &arr); err != nil {
+			return err
+		}
+		*l = arr
+		return nil
+	}
+	var one yahooValue
+	if err := json.Unmarshal(b, &one); err != nil {
+		return err
+	}
+	*l = yahooWhenList{one}
+	return nil
+}
+
+// ParseFacts decodes a quoteSummary payload. today is YYYY-MM-DD. The earnings
+// date is the earliest release on or after today. A fmt of YYYY-MM-DD wins;
+// otherwise the UTC day of the unix raw value is used.
+func ParseFacts(data []byte, today string) (marketCap, pe, revenue, earnings *float64, date string, err error) {
+	var raw struct {
+		QuoteSummary struct {
+			Result []struct {
+				Price struct {
+					MarketCap *yahooValue `json:"marketCap"`
+				} `json:"price"`
+				SummaryDetail struct {
+					MarketCap  *yahooValue `json:"marketCap"`
+					TrailingPE *yahooValue `json:"trailingPE"`
+				} `json:"summaryDetail"`
+				FinancialData struct {
+					TotalRevenue *yahooValue `json:"totalRevenue"`
+				} `json:"financialData"`
+				DefaultKeyStatistics struct {
+					TrailingPE        *yahooValue `json:"trailingPE"`
+					NetIncomeToCommon *yahooValue `json:"netIncomeToCommon"`
+				} `json:"defaultKeyStatistics"`
+				CalendarEvents struct {
+					Earnings struct {
+						EarningsDate yahooWhenList `json:"earningsDate"`
+					} `json:"earnings"`
+				} `json:"calendarEvents"`
+			} `json:"result"`
+			Error *struct {
+				Code        string `json:"code"`
+				Description string `json:"description"`
+			} `json:"error"`
+		} `json:"quoteSummary"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, nil, nil, nil, "", err
+	}
+	if raw.QuoteSummary.Error != nil {
+		msg := strings.TrimSpace(raw.QuoteSummary.Error.Description)
+		if msg == "" {
+			msg = strings.TrimSpace(raw.QuoteSummary.Error.Code)
+		}
+		if msg == "" {
+			msg = "yahoo quote summary"
+		}
+		return nil, nil, nil, nil, "", errors.New(msg)
+	}
+	if len(raw.QuoteSummary.Result) == 0 {
+		return nil, nil, nil, nil, "", nil
+	}
+	row := raw.QuoteSummary.Result[0]
+	return firstPositive(row.Price.MarketCap, row.SummaryDetail.MarketCap),
+		firstPositive(row.SummaryDetail.TrailingPE, row.DefaultKeyStatistics.TrailingPE),
+		yahooFinite(row.FinancialData.TotalRevenue),
+		yahooFinite(row.DefaultKeyStatistics.NetIncomeToCommon),
+		nextEarningsDate(row.CalendarEvents.Earnings.EarningsDate, today),
+		nil
+}
+
+func firstPositive(vals ...*yahooValue) *float64 {
+	for _, v := range vals {
+		if n := yahooPositive(v); n != nil {
+			return n
+		}
+	}
+	return nil
+}
+
+func yahooPositive(v *yahooValue) *float64 {
+	n := yahooFinite(v)
+	if n == nil || *n <= 0 {
+		return nil
+	}
+	return n
+}
+
+func yahooFinite(v *yahooValue) *float64 {
+	if v == nil || v.raw == nil || math.IsNaN(*v.raw) || math.IsInf(*v.raw, 0) {
+		return nil
+	}
+	n := *v.raw
+	return &n
+}
+
+func nextEarningsDate(dates []yahooValue, today string) string {
+	best := ""
+	for _, d := range dates {
+		day := yahooCalendarDay(d.fmt, d.raw)
+		if day == "" || (today != "" && day < today) {
+			continue
+		}
+		if best == "" || day < best {
+			best = day
+		}
+	}
+	return best
+}
+
+func yahooCalendarDay(fmtStr string, raw *float64) string {
+	if t, err := time.Parse("2006-01-02", strings.TrimSpace(fmtStr)); err == nil {
+		return t.Format("2006-01-02")
+	}
+	if raw == nil || math.IsNaN(*raw) || math.IsInf(*raw, 0) {
+		return ""
+	}
+	sec := int64(*raw)
+	if sec > 1e12 {
+		sec = sec / 1000
+	}
+	if sec <= 0 {
+		return ""
+	}
+	return time.Unix(sec, 0).UTC().Format("2006-01-02")
 }

@@ -514,41 +514,130 @@ func (s *Syncer) Tick(ctx context.Context) error {
 	return nil
 }
 
-// RefreshFacts loads the company snapshot for one stock. A failed call returns
-// before writing, so the stored row stays put. Futures and crypto are skipped.
-// The annual filing is the fourth call: a 10-Q income statement is year-to-date,
-// and the fourth quarter is that year minus the prior year-to-date.
+// RefreshFacts loads the company snapshot for one stock. Finnhub is asked first.
+// Each of its three calls stands alone, and Yahoo fills a figure that call left
+// empty or could not fetch. Futures, crypto, and indexes are skipped. A dotted
+// listing uses Yahoo only. When every source fails, nothing is written.
+// The annual filing is the fourth Finnhub call: a 10-Q income statement is
+// year-to-date, and the fourth quarter is that year minus the prior year-to-date.
 func (s *Syncer) RefreshFacts(ctx context.Context, id int64) error {
 	sym, err := s.Store.Symbol(ctx, id)
 	if err != nil {
 		return err
 	}
-	if sym.AssetClass != market.Stock || yahooListed(sym.ProviderSymbol) || market.YahooIndex(sym.ProviderSymbol) || s.Finnhub == nil || !s.Finnhub.Enabled() {
+	if sym.AssetClass != market.Stock || market.YahooIndex(sym.ProviderSymbol) {
 		return nil
 	}
-	marketCap, pe, err := s.Finnhub.Metric(ctx, sym.ProviderSymbol)
-	if err != nil {
-		return err
+	useFinn := !yahooListed(sym.ProviderSymbol) && s.Finnhub != nil && s.Finnhub.Enabled()
+	if !useFinn && s.Yahoo == nil {
+		return nil
 	}
-	date, hour, err := s.Finnhub.NextEarnings(ctx, sym.ProviderSymbol, s.now())
-	if err != nil {
-		return err
+
+	var (
+		marketCap, pe, revenue, earnings *float64
+		date, hour                       string
+		metricOK, calendarOK, reportedOK bool
+		errs                             []error
+	)
+	if useFinn {
+		marketCap, pe, err = s.Finnhub.Metric(ctx, sym.ProviderSymbol)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			metricOK = true
+		}
+		date, hour, err = s.Finnhub.NextEarnings(ctx, sym.ProviderSymbol, s.now())
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			calendarOK = true
+		}
+		revenue, earnings, err = s.Finnhub.ReportedTTM(ctx, sym.ProviderSymbol, s.now())
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			reportedOK = true
+		}
 	}
-	revenue, earnings, err := s.Finnhub.ReportedTTM(ctx, sym.ProviderSymbol, s.now())
-	if err != nil {
-		return err
+
+	filled := metricOK && calendarOK && reportedOK && marketCap != nil && pe != nil && revenue != nil && earnings != nil && date != ""
+	var yCap, yPe, yRev, yEarn *float64
+	var yDate string
+	yahooOK := false
+	if !filled && s.Yahoo != nil {
+		var yErr error
+		yCap, yPe, yRev, yEarn, yDate, _, yErr = s.Yahoo.Facts(ctx, sym.ProviderSymbol, s.now())
+		if yErr != nil {
+			errs = append(errs, yErr)
+		} else {
+			yahooOK = true
+		}
 	}
+	if !metricOK && !calendarOK && !reportedOK && !yahooOK {
+		if len(errs) == 0 {
+			return nil
+		}
+		return errors.Join(errs...)
+	}
+
+	keep := !yahooOK && useFinn && (!metricOK || !calendarOK || !reportedOK)
+	var prev store.Fact
+	if keep {
+		prev, err = s.Store.Fact(ctx, id)
+		if err != nil {
+			return err
+		}
+	}
+	marketCap = pickFloat(metricOK, marketCap, yahooOK, yCap, keep, prev.MarketCap)
+	pe = pickFloat(metricOK, pe, yahooOK, yPe, keep, prev.PeTTM)
+	revenue = pickFloat(reportedOK, revenue, yahooOK, yRev, keep, prev.RevenueTTM)
+	earnings = pickFloat(reportedOK, earnings, yahooOK, yEarn, keep, prev.EarningsTTM)
+	date, hour = pickDate(calendarOK, date, hour, yahooOK, yDate, keep, prev.EarningsDate, prev.EarningsHour)
 	return s.Store.UpsertFacts(ctx, id, marketCap, pe, revenue, earnings, date, hour, s.now().Unix())
+}
+
+// pickFloat keeps a present Finnhub value. Yahoo supplies the rest when that
+// call succeeded, including a confirmed empty. A failed Finnhub call with no
+// Yahoo answer keeps the stored figure.
+func pickFloat(primaryOK bool, primary *float64, fallbackOK bool, fallback *float64, keep bool, prev *float64) *float64 {
+	if primaryOK && primary != nil {
+		return primary
+	}
+	if fallbackOK {
+		return fallback
+	}
+	if primaryOK {
+		return nil
+	}
+	if keep {
+		return prev
+	}
+	return nil
+}
+
+// pickDate keeps Finnhub's date and open/close tag when that call found one.
+// Yahoo's date has no tag. A failed calendar with no Yahoo answer keeps both.
+func pickDate(calendarOK bool, date, hour string, yahooOK bool, yDate string, keep bool, prevDate, prevHour string) (string, string) {
+	if calendarOK && date != "" {
+		return date, hour
+	}
+	if yahooOK && yDate != "" {
+		return yDate, ""
+	}
+	if yahooOK || calendarOK {
+		return "", ""
+	}
+	if keep {
+		return prevDate, prevHour
+	}
+	return "", ""
 }
 
 // refreshStaleFact refreshes one stock whose snapshot is missing or older than 20 hours.
 func (s *Syncer) refreshStaleFact(ctx context.Context, symbols []store.TickSymbol) (int, error) {
-	if s.Finnhub == nil || !s.Finnhub.Enabled() {
-		return 0, nil
-	}
 	ids := make([]int64, 0, len(symbols))
 	for _, sym := range symbols {
-		if sym.AssetClass == market.Stock && !yahooListed(sym.ProviderSymbol) && !market.YahooIndex(sym.ProviderSymbol) {
+		if factCandidate(s, sym) {
 			ids = append(ids, sym.ID)
 		}
 	}
@@ -560,6 +649,16 @@ func (s *Syncer) refreshStaleFact(ctx context.Context, symbols []store.TickSymbo
 		return 0, err
 	}
 	return 1, nil
+}
+
+func factCandidate(s *Syncer, sym store.TickSymbol) bool {
+	if sym.AssetClass != market.Stock || market.YahooIndex(sym.ProviderSymbol) {
+		return false
+	}
+	if yahooListed(sym.ProviderSymbol) {
+		return s.Yahoo != nil
+	}
+	return (s.Finnhub != nil && s.Finnhub.Enabled()) || s.Yahoo != nil
 }
 
 // RefreshRanges rewrites a cached band when the prior close it is centered on

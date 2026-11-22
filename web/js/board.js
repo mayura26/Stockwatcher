@@ -777,26 +777,20 @@ function sparkHit(row, editing) {
 
 function factsLine(row) {
   if (row.asset_class !== 'stock') return '';
-  const cells = [];
   const next = formatDay(row.earnings_date);
-  if (next) {
-    const when = row.earnings_hour === 'bmo' ? ' · open' : row.earnings_hour === 'amc' ? ' · close' : '';
-    cells.push(fact('Next', next + when));
-  }
-  const cap = formatCompact(row.market_cap);
-  if (cap) cells.push(fact('Cap', cap));
-  const pe = formatPE(row.pe_ttm);
-  if (pe) cells.push(fact('P/E', pe));
-  const rev = formatCompact(row.revenue_ttm);
-  if (rev) cells.push(fact('Rev', rev));
-  const earn = formatCompact(row.earnings_ttm);
-  if (earn) cells.push(fact('Earn', earn));
-  if (!cells.length) return '';
+  const when = next && row.earnings_hour === 'bmo' ? ' · open' : next && row.earnings_hour === 'amc' ? ' · close' : '';
+  const cells = [
+    fact('Cap', formatCompact(row.market_cap)),
+    fact('P/E', formatPE(row.pe_ttm)),
+    fact('Rev', formatCompact(row.revenue_ttm)),
+    fact('Earn', formatCompact(row.earnings_ttm)),
+    fact('Next', next ? next + when : ''),
+  ];
   return `<div class="facts">${cells.join('')}</div>`;
 }
 
 function fact(label, value) {
-  return `<span class="fact"><span class="chg-h">${escapeHTML(label)}</span><span class="num">${escapeHTML(value)}</span></span>`;
+  return `<span class="fact"><span class="chg-h">${escapeHTML(label)}</span><span class="num">${escapeHTML(value || '—')}</span></span>`;
 }
 
 function rangeMeter(row) {

@@ -1727,8 +1727,43 @@ ORDER BY CASE WHEN l.symbol_id IS NULL THEN 0 ELSE 1 END, l.checked_at, s.id`, o
 	return out, rows.Err()
 }
 
-// UpsertFacts replaces the company snapshot. A failed fetch must not call this,
-// so the previous row stays on the card.
+// Fact is the stored company snapshot. Found is false when the symbol has no row.
+type Fact struct {
+	MarketCap    *float64
+	PeTTM        *float64
+	RevenueTTM   *float64
+	EarningsTTM  *float64
+	EarningsDate string
+	EarningsHour string
+	Found        bool
+}
+
+// Fact loads the company snapshot. A missing row is Found false and a nil error.
+func (s *Store) Fact(ctx context.Context, symbolID int64) (Fact, error) {
+	var cap, pe, rev, earn sql.NullFloat64
+	var date, hour sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+SELECT market_cap, pe_ttm, revenue_ttm, earnings_ttm, earnings_date, earnings_hour
+FROM facts WHERE symbol_id = ?`, symbolID).Scan(&cap, &pe, &rev, &earn, &date, &hour)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Fact{}, nil
+	}
+	if err != nil {
+		return Fact{}, err
+	}
+	return Fact{
+		MarketCap:    floatPtr(cap),
+		PeTTM:        floatPtr(pe),
+		RevenueTTM:   floatPtr(rev),
+		EarningsTTM:  floatPtr(earn),
+		EarningsDate: date.String,
+		EarningsHour: hour.String,
+		Found:        true,
+	}, nil
+}
+
+// UpsertFacts replaces the company snapshot. A fetch that learned nothing must
+// not call this, so the previous row stays on the card.
 func (s *Store) UpsertFacts(ctx context.Context, symbolID int64, marketCap, pe, revenue, earnings *float64, earningsDate, earningsHour string, fetchedAt int64) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO facts(symbol_id, market_cap, pe_ttm, revenue_ttm, earnings_ttm, earnings_date, earnings_hour, fetched_at)
