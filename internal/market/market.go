@@ -93,10 +93,11 @@ type Hit struct {
 	Name           string `json:"name"`
 }
 
-// Performance writes the D/W/M percents stored on a quote row.
-// Stocks and futures use 5 and 21 sessions. Crypto uses 7 and 30 calendar days.
+// Performance writes the D/W/M/YTD/1Y percents stored on a quote row.
+// Stocks and futures use 5 and 21 sessions for W and M. Crypto uses 7 and 30 calendar days.
+// YTD and the rolling year use the same bases as the chart spans.
 // DayPct on the quote wins for D; otherwise D is price versus PrevClose.
-func Performance(class string, q Quote, bars []Bar, now time.Time) (d, w, m *float64) {
+func Performance(class string, q Quote, bars []Bar, now time.Time) (d, w, m, ytd, y1 *float64) {
 	if q.DayPct != nil {
 		v := *q.DayPct
 		d = &v
@@ -105,14 +106,17 @@ func Performance(class string, q Quote, bars []Bar, now time.Time) (d, w, m *flo
 		d = &v
 	}
 	if q.Price <= 0 {
-		return d, nil, nil
+		return d, nil, nil, nil, nil
 	}
+	ytd, _ = RangeMove(class, "YTD", q.Price, bars, now)
+	y1, _ = RangeMove(class, "1Y", q.Price, bars, now)
 	if class == Crypto {
 		return d,
 			changeVsDate(q.Price, bars, now.UTC().AddDate(0, 0, -7)),
-			changeVsDate(q.Price, bars, now.UTC().AddDate(0, 0, -30))
+			changeVsDate(q.Price, bars, now.UTC().AddDate(0, 0, -30)),
+			ytd, y1
 	}
-	return d, changeVsSessions(q.Price, bars, 5), changeVsSessions(q.Price, bars, 21)
+	return d, changeVsSessions(q.Price, bars, 5), changeVsSessions(q.Price, bars, 21), ytd, y1
 }
 
 // LookbackPct is the percent change from price to the last point at or before

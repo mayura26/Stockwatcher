@@ -55,7 +55,7 @@ func TestBarsRange(t *testing.T) {
 	}
 	prev := 100.0
 	day := 1.5
-	if err := st.UpsertQuote(ctx, sym.ID, 110, &prev, &day, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 110, &prev, &day, nil, nil, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	var daily []market.Bar

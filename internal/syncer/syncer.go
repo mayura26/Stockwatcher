@@ -858,7 +858,7 @@ func (s *Syncer) writeQuote(ctx context.Context, class string, id int64, q marke
 	if err != nil {
 		return err
 	}
-	d, w, m := market.Performance(class, q, bars, s.now())
+	d, w, m, ytd, y1 := market.Performance(class, q, bars, s.now())
 	asOf := q.AsOf
 	if asOf.IsZero() {
 		asOf = s.now()
@@ -875,7 +875,7 @@ func (s *Syncer) writeQuote(ctx context.Context, class string, id int64, q marke
 		v := q.PrevClose
 		prev = &v
 	}
-	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, h1, h4, spark, asOf.Unix(), q.IntradaySet, q.ExtSession, q.ExtPct, q.ExtSet)
+	return s.Store.UpsertQuote(ctx, id, q.Price, prev, d, w, m, ytd, y1, h1, h4, spark, asOf.Unix(), q.IntradaySet, q.ExtSession, q.ExtPct, q.ExtSet)
 }
 
 func (s *Syncer) evalAlerts(ctx context.Context, quotes map[int64]market.Quote) (int, error) {

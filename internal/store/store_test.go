@@ -40,7 +40,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	}
 	day := 1.25
 	h1 := 0.5
-	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, &h1, nil, []float64{1, 2, 3}, time.Now().Unix(), true, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 5800, nil, &day, nil, nil, nil, nil, &h1, nil, []float64{1, 2, 3}, time.Now().Unix(), true, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertBars(ctx, sym.ID, []market.Bar{{Day: "2024-01-02", Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 3}}); err != nil {
@@ -55,7 +55,7 @@ func TestBoardGroupsAndLock(t *testing.T) {
 	if len(watch.Rows) != 1 || row.Display != "ES" || row.Price == nil || *row.Price != 5800 || row.ChangeH1 == nil || *row.ChangeH1 != 0.5 || row.ChangeH4 != nil || len(row.Sparkline) != 3 || row.Sparkline[2] != 3 {
 		t.Fatalf("%+v", watch.Rows)
 	}
-	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 5801, nil, &day, nil, nil, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	board, err = st.Board(ctx)
@@ -173,7 +173,7 @@ func TestNotableGroup(t *testing.T) {
 	}
 	quote := func(id int64, price float64, spark []float64) {
 		t.Helper()
-		if err := st.UpsertQuote(ctx, id, price, nil, nil, nil, nil, nil, nil, spark, 1, true, "", nil, false); err != nil {
+		if err := st.UpsertQuote(ctx, id, price, nil, nil, nil, nil, nil, nil, nil, nil, spark, 1, true, "", nil, false); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.UpsertRange(ctx, id, "2024-01-02", 10, 12, 1); err != nil {
@@ -268,7 +268,7 @@ func TestOwnedGroup(t *testing.T) {
 	if err := st.SetOwned(ctx, 99999, true); err != ErrNotFound {
 		t.Fatal(err)
 	}
-	if err := st.UpsertQuote(ctx, second.ID, 16, nil, nil, nil, nil, nil, nil, []float64{11}, 1, true, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, second.ID, 16, nil, nil, nil, nil, nil, nil, nil, nil, []float64{11}, 1, true, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertRange(ctx, second.ID, "2024-01-02", 10, 12, 1); err != nil {
@@ -445,7 +445,7 @@ func TestBracketCancelsMate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertQuote(ctx, sym.ID, 100, nil, nil, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, sym.ID, 100, nil, nil, nil, nil, nil, nil, nil, nil, nil, time.Now().Unix(), false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	pair, err := st.CreateBracket(ctx, sym.ID, 10)
@@ -543,24 +543,25 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	defer st.Close()
 	ctx := context.Background()
 	h1, h4 := 1.5, -2.0
-	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, &h1, &h4, nil, 2, true, "", nil, false); err != nil {
+	ytd, y1 := 12.5, -3.25
+	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, &ytd, &y1, &h1, &h4, nil, 2, true, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	q, err := st.Quote(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q.Price != 11 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 {
+	if q.Price != 11 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 || q.ChangeY == nil || *q.ChangeY != 12.5 || q.ChangeY1 == nil || *q.ChangeY1 != -3.25 {
 		t.Fatalf("%+v", q)
 	}
-	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 3, false, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, nil, nil, 3, false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	q, err = st.Quote(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q.Price != 12 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 {
+	if q.Price != 12 || q.ChangeH1 == nil || *q.ChangeH1 != 1.5 || q.ChangeH4 == nil || *q.ChangeH4 != -2 || q.ChangeY != nil || q.ChangeY1 != nil {
 		t.Fatalf("preserved %+v", q)
 	}
 }
@@ -608,7 +609,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	defer st.Close()
 	ctx := context.Background()
 	pre := 0.4
-	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, nil, nil, nil, 2, false, "pre", &pre, true); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 11, nil, nil, nil, nil, nil, nil, nil, nil, nil, 2, false, "pre", &pre, true); err != nil {
 		t.Fatal(err)
 	}
 	q, err := st.Quote(ctx, 1)
@@ -618,7 +619,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	if q.Price != 11 || q.ExtSession != "pre" || q.ExtPct == nil || *q.ExtPct != 0.4 {
 		t.Fatalf("%+v", q)
 	}
-	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 3, false, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, nil, nil, 3, false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	q, err = st.Quote(ctx, 1)
@@ -629,7 +630,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 		t.Fatalf("preserved %+v", q)
 	}
 	flat := 0.0
-	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, 4, false, "post", &flat, true); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 12, nil, nil, nil, nil, nil, nil, nil, nil, nil, 4, false, "post", &flat, true); err != nil {
 		t.Fatal(err)
 	}
 	q, err = st.Quote(ctx, 1)
@@ -639,7 +640,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 	if q.ExtSession != "post" || q.ExtPct == nil || *q.ExtPct != 0 {
 		t.Fatalf("flat %+v", q)
 	}
-	if err := st.UpsertQuote(ctx, 1, 13, nil, nil, nil, nil, nil, nil, nil, 5, false, "", nil, true); err != nil {
+	if err := st.UpsertQuote(ctx, 1, 13, nil, nil, nil, nil, nil, nil, nil, nil, nil, 5, false, "", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	q, err = st.Quote(ctx, 1)
@@ -665,7 +666,7 @@ INSERT INTO quotes(symbol_id, price, change_d, as_of) VALUES (1, 10, 1, 1);
 		t.Fatal(err)
 	}
 	after := -1.25
-	if err := fresh.UpsertQuote(ctx, sym.ID, 190, nil, nil, nil, nil, nil, nil, nil, 6, false, "post", &after, true); err != nil {
+	if err := fresh.UpsertQuote(ctx, sym.ID, 190, nil, nil, nil, nil, nil, nil, nil, nil, nil, 6, false, "post", &after, true); err != nil {
 		t.Fatal(err)
 	}
 	board, err = fresh.Board(ctx)
@@ -801,7 +802,7 @@ INSERT INTO quotes(symbol_id, price, as_of) VALUES (1, 190, 1);
 	if _, err := st.CreateAlert(ctx, lone.ID, "above", "once", 10); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertQuote(ctx, lone.ID, 100, nil, nil, nil, nil, nil, nil, nil, 1, false, "", nil, false); err != nil {
+	if err := st.UpsertQuote(ctx, lone.ID, 100, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, false, "", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertRange(ctx, lone.ID, "2024-01-02", 1, 2, 1); err != nil {

@@ -24,7 +24,8 @@ func TestPerformanceSessionsAndCalendar(t *testing.T) {
 		{Day: "2024-01-08", Close: 110},
 	}
 	day := 1.5
-	d, w, m := Performance(Stock, Quote{Price: 110, PrevClose: 100, DayPct: &day}, bars, time.Date(2024, 1, 8, 15, 0, 0, 0, time.UTC))
+	stockNow := time.Date(2024, 1, 8, 15, 0, 0, 0, time.UTC)
+	d, w, m, ytd, y1 := Performance(Stock, Quote{Price: 110, PrevClose: 100, DayPct: &day}, bars, stockNow)
 	if d == nil || *d != 1.5 {
 		t.Fatalf("day = %v", d)
 	}
@@ -36,15 +37,19 @@ func TestPerformanceSessionsAndCalendar(t *testing.T) {
 	if m != nil {
 		t.Fatal("month should be nil with only 6 bars")
 	}
+	if ytd != nil || y1 != nil {
+		t.Fatalf("short history ytd=%v y1=%v", ytd, y1)
+	}
 
 	crypto := []Bar{
+		{Day: "2023-01-10", Close: 25},
 		{Day: "2023-12-16", Close: 40},
 		{Day: "2024-01-01", Close: 50},
 		{Day: "2024-01-08", Close: 70},
 		{Day: "2024-01-15", Close: 100},
 	}
 	now := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
-	_, cw, cm := Performance(Crypto, Quote{Price: 100, PrevClose: 90}, crypto, now)
+	_, cw, cm, cytd, cy1 := Performance(Crypto, Quote{Price: 100, PrevClose: 90}, crypto, now)
 	if cw == nil {
 		t.Fatal("crypto week nil")
 	}
@@ -53,6 +58,29 @@ func TestPerformanceSessionsAndCalendar(t *testing.T) {
 		t.Fatal("crypto month nil")
 	}
 	near(t, *cm, (100.0/40.0-1)*100)
+	if cytd == nil {
+		t.Fatal("crypto ytd nil")
+	}
+	near(t, *cytd, (100.0/40.0-1)*100)
+	if cy1 == nil {
+		t.Fatal("crypto year nil")
+	}
+	near(t, *cy1, (100.0/25.0-1)*100)
+
+	long := make([]Bar, 253)
+	start := time.Date(2023, 1, 2, 0, 0, 0, 0, time.UTC)
+	for i := range long {
+		long[i] = Bar{Day: start.AddDate(0, 0, i).Format("2006-01-02"), Close: float64(50 + i)}
+	}
+	longNow := time.Date(2023, 9, 11, 15, 0, 0, 0, time.UTC)
+	price := 400.0
+	_, _, _, _, year := Performance(Stock, Quote{Price: price, PrevClose: 100}, long, longNow)
+	want, _ := RangeMove(Stock, "1Y", price, long, longNow)
+	if year == nil || want == nil {
+		t.Fatalf("year %v %v", year, want)
+	}
+	near(t, *year, *want)
+	near(t, *year, (price/long[0].Close-1)*100)
 }
 
 func TestLookbackPct(t *testing.T) {

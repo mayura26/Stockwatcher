@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS quotes (
   change_d REAL,
   change_w REAL,
   change_m REAL,
+  change_ytd REAL,
+  change_1y REAL,
   change_1h REAL,
   change_4h REAL,
   sparkline TEXT,
@@ -169,6 +171,9 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 		return err
 	}
 	if err := s.ensureQuoteHourly(); err != nil {
+		return err
+	}
+	if err := s.ensureQuoteYear(); err != nil {
 		return err
 	}
 	if err := s.ensureQuoteSparkline(); err != nil {
@@ -404,6 +409,44 @@ func (s *Store) ensureQuoteHourly() error {
 	return nil
 }
 
+// ensureQuoteYear adds the year-to-date and rolling-year percents on databases created before them.
+func (s *Store) ensureQuoteYear() error {
+	rows, err := s.db.Query(`PRAGMA table_info(quotes)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasYTD, hasY1 := false, false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		switch name {
+		case "change_ytd":
+			hasYTD = true
+		case "change_1y":
+			hasY1 = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasYTD {
+		if _, err := s.db.Exec(`ALTER TABLE quotes ADD COLUMN change_ytd REAL`); err != nil {
+			return err
+		}
+	}
+	if !hasY1 {
+		if _, err := s.db.Exec(`ALTER TABLE quotes ADD COLUMN change_1y REAL`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ensureQuoteSparkline adds the last-session closes on databases created before them.
 func (s *Store) ensureQuoteSparkline() error {
 	rows, err := s.db.Query(`PRAGMA table_info(quotes)`)
@@ -491,6 +534,8 @@ type Row struct {
 	ChangeD        *float64  `json:"change_d"`
 	ChangeW        *float64  `json:"change_w"`
 	ChangeM        *float64  `json:"change_m"`
+	ChangeY        *float64  `json:"change_ytd"`
+	ChangeY1       *float64  `json:"change_1y"`
 	ChangeH1       *float64  `json:"change_1h"`
 	ChangeH4       *float64  `json:"change_4h"`
 	Sparkline      []float64 `json:"sparkline,omitempty"`
@@ -531,7 +576,7 @@ func (s *Store) Board(ctx context.Context) (Board, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT g.id, g.name, g.color, g.icon, g.position,
        s.id, s.display, s.name, s.asset_class, s.provider_symbol,
-       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
+       q.price, q.change_d, q.change_w, q.change_m, q.change_ytd, q.change_1y, q.change_1h, q.change_4h, q.sparkline, q.as_of,
        q.ext_session, q.ext_pct, gs.position, r.low, r.high,
        f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour,
        EXISTS(SELECT 1 FROM symbol_logos l WHERE l.symbol_id = s.id AND l.body IS NOT NULL)
@@ -556,7 +601,7 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			display, name, cls   sql.NullString
 			provider             sql.NullString
 			price, cd, cw, cm    sql.NullFloat64
-			h1, h4               sql.NullFloat64
+			ytd, y1, h1, h4      sql.NullFloat64
 			spark                sql.NullString
 			asOf                 sql.NullInt64
 			extSess              sql.NullString
@@ -567,7 +612,7 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			earnDate, earnHour   sql.NullString
 			has                  int
 		)
-		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &provider, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &spos, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
+		if err := rows.Scan(&gid, &gname, &gcolor, &gicon, &gpos, &sid, &display, &name, &cls, &provider, &price, &cd, &cw, &cm, &ytd, &y1, &h1, &h4, &spark, &asOf, &extSess, &extPct, &spos, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
 			return Board{}, err
 		}
 		i, ok := index[gid]
@@ -593,6 +638,8 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 			ChangeD:        floatPtr(cd),
 			ChangeW:        floatPtr(cw),
 			ChangeM:        floatPtr(cm),
+			ChangeY:        floatPtr(ytd),
+			ChangeY1:       floatPtr(y1),
 			ChangeH1:       floatPtr(h1),
 			ChangeH4:       floatPtr(h4),
 			Sparkline:      decodeSpark(spark),
@@ -697,7 +744,7 @@ func (s *Store) notableGroup(ctx context.Context, groups []Group, owned []Row) (
 func (s *Store) alertOnlyRows(ctx context.Context) ([]Row, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT s.id, s.display, s.name, s.asset_class, s.provider_symbol,
-       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
+       q.price, q.change_d, q.change_w, q.change_m, q.change_ytd, q.change_1y, q.change_1h, q.change_4h, q.sparkline, q.as_of,
        q.ext_session, q.ext_pct, r.low, r.high,
        f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour,
        EXISTS(SELECT 1 FROM symbol_logos l WHERE l.symbol_id = s.id AND l.body IS NOT NULL)
@@ -715,24 +762,27 @@ ORDER BY s.id`)
 	var out []Row
 	for rows.Next() {
 		var (
-			row                 Row
-			price, cd, cw, cm   sql.NullFloat64
-			h1, h4, rlow, rhigh sql.NullFloat64
-			spark               sql.NullString
-			asOf                sql.NullInt64
-			extSess             sql.NullString
-			extPct              sql.NullFloat64
-			cap, pe, rev, earn  sql.NullFloat64
-			earnDate, earnHour  sql.NullString
-			has                 int
+			row                Row
+			price, cd, cw, cm  sql.NullFloat64
+			ytd, y1, h1, h4    sql.NullFloat64
+			rlow, rhigh        sql.NullFloat64
+			spark              sql.NullString
+			asOf               sql.NullInt64
+			extSess            sql.NullString
+			extPct             sql.NullFloat64
+			cap, pe, rev, earn sql.NullFloat64
+			earnDate, earnHour sql.NullString
+			has                int
 		)
-		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &row.ProviderSymbol, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &row.ProviderSymbol, &price, &cd, &cw, &cm, &ytd, &y1, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
 			return nil, err
 		}
 		row.Price = floatPtr(price)
 		row.ChangeD = floatPtr(cd)
 		row.ChangeW = floatPtr(cw)
 		row.ChangeM = floatPtr(cm)
+		row.ChangeY = floatPtr(ytd)
+		row.ChangeY1 = floatPtr(y1)
 		row.ChangeH1 = floatPtr(h1)
 		row.ChangeH4 = floatPtr(h4)
 		row.Sparkline = decodeSpark(spark)
@@ -751,7 +801,7 @@ ORDER BY s.id`)
 func (s *Store) ownedRows(ctx context.Context) ([]Row, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT s.id, s.display, s.name, s.asset_class, s.provider_symbol,
-       q.price, q.change_d, q.change_w, q.change_m, q.change_1h, q.change_4h, q.sparkline, q.as_of,
+       q.price, q.change_d, q.change_w, q.change_m, q.change_ytd, q.change_1y, q.change_1h, q.change_4h, q.sparkline, q.as_of,
        q.ext_session, q.ext_pct, r.low, r.high,
        f.market_cap, f.pe_ttm, f.revenue_ttm, f.earnings_ttm, f.earnings_date, f.earnings_hour,
        EXISTS(SELECT 1 FROM symbol_logos l WHERE l.symbol_id = s.id AND l.body IS NOT NULL)
@@ -768,24 +818,27 @@ ORDER BY o.position, s.id`)
 	var out []Row
 	for rows.Next() {
 		var (
-			row                 Row
-			price, cd, cw, cm   sql.NullFloat64
-			h1, h4, rlow, rhigh sql.NullFloat64
-			spark               sql.NullString
-			asOf                sql.NullInt64
-			extSess             sql.NullString
-			extPct              sql.NullFloat64
-			cap, pe, rev, earn  sql.NullFloat64
-			earnDate, earnHour  sql.NullString
-			has                 int
+			row                Row
+			price, cd, cw, cm  sql.NullFloat64
+			ytd, y1, h1, h4    sql.NullFloat64
+			rlow, rhigh        sql.NullFloat64
+			spark              sql.NullString
+			asOf               sql.NullInt64
+			extSess            sql.NullString
+			extPct             sql.NullFloat64
+			cap, pe, rev, earn sql.NullFloat64
+			earnDate, earnHour sql.NullString
+			has                int
 		)
-		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &row.ProviderSymbol, &price, &cd, &cw, &cm, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
+		if err := rows.Scan(&row.ID, &row.Display, &row.Name, &row.AssetClass, &row.ProviderSymbol, &price, &cd, &cw, &cm, &ytd, &y1, &h1, &h4, &spark, &asOf, &extSess, &extPct, &rlow, &rhigh, &cap, &pe, &rev, &earn, &earnDate, &earnHour, &has); err != nil {
 			return nil, err
 		}
 		row.Price = floatPtr(price)
 		row.ChangeD = floatPtr(cd)
 		row.ChangeW = floatPtr(cw)
 		row.ChangeM = floatPtr(cm)
+		row.ChangeY = floatPtr(ytd)
+		row.ChangeY1 = floatPtr(y1)
 		row.ChangeH1 = floatPtr(h1)
 		row.ChangeH4 = floatPtr(h4)
 		row.Sparkline = decodeSpark(spark)
@@ -1598,6 +1651,8 @@ type QuoteRow struct {
 	ChangeD    *float64
 	ChangeW    *float64
 	ChangeM    *float64
+	ChangeY    *float64
+	ChangeY1   *float64
 	ChangeH1   *float64
 	ChangeH4   *float64
 	AsOf       int64
@@ -1607,10 +1662,10 @@ type QuoteRow struct {
 
 func (s *Store) Quote(ctx context.Context, symbolID int64) (QuoteRow, error) {
 	var q QuoteRow
-	var prev, d, w, m, h1, h4, extPct sql.NullFloat64
+	var prev, d, w, m, ytd, y1, h1, h4, extPct sql.NullFloat64
 	var extSess sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT price, prev_close, change_d, change_w, change_m, change_1h, change_4h, as_of, ext_session, ext_pct FROM quotes WHERE symbol_id = ?`, symbolID).
-		Scan(&q.Price, &prev, &d, &w, &m, &h1, &h4, &q.AsOf, &extSess, &extPct)
+	err := s.db.QueryRowContext(ctx, `SELECT price, prev_close, change_d, change_w, change_m, change_ytd, change_1y, change_1h, change_4h, as_of, ext_session, ext_pct FROM quotes WHERE symbol_id = ?`, symbolID).
+		Scan(&q.Price, &prev, &d, &w, &m, &ytd, &y1, &h1, &h4, &q.AsOf, &extSess, &extPct)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QuoteRow{}, ErrNotFound
 	}
@@ -1621,6 +1676,8 @@ func (s *Store) Quote(ctx context.Context, symbolID int64) (QuoteRow, error) {
 	q.ChangeD = floatPtr(d)
 	q.ChangeW = floatPtr(w)
 	q.ChangeM = floatPtr(m)
+	q.ChangeY = floatPtr(ytd)
+	q.ChangeY1 = floatPtr(y1)
 	q.ChangeH1 = floatPtr(h1)
 	q.ChangeH4 = floatPtr(h4)
 	q.ExtSession = extSess.String
@@ -1813,7 +1870,7 @@ LIMIT 1`, args...).Scan(&id)
 
 // UpsertQuote writes a quote. hourly false keeps change_1h, change_4h, and the sparkline already stored.
 // extSet false keeps ext_session and ext_pct. extSet true writes them, including a clear.
-func (s *Store) UpsertQuote(ctx context.Context, symbolID int64, price float64, prev, d, w, m, h1, h4 *float64, spark []float64, asOf int64, hourly bool, extSession string, extPct *float64, extSet bool) error {
+func (s *Store) UpsertQuote(ctx context.Context, symbolID int64, price float64, prev, d, w, m, ytd, y1, h1, h4 *float64, spark []float64, asOf int64, hourly bool, extSession string, extPct *float64, extSet bool) error {
 	flag := 0
 	var sparkText any
 	if hourly {
@@ -1840,20 +1897,22 @@ func (s *Store) UpsertQuote(ctx context.Context, symbolID int64, price float64, 
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO quotes(symbol_id, price, prev_close, change_d, change_w, change_m, change_1h, change_4h, sparkline, as_of, ext_session, ext_pct)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO quotes(symbol_id, price, prev_close, change_d, change_w, change_m, change_ytd, change_1y, change_1h, change_4h, sparkline, as_of, ext_session, ext_pct)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(symbol_id) DO UPDATE SET
   price = excluded.price,
   prev_close = excluded.prev_close,
   change_d = excluded.change_d,
   change_w = excluded.change_w,
   change_m = excluded.change_m,
+  change_ytd = excluded.change_ytd,
+  change_1y = excluded.change_1y,
   change_1h = CASE WHEN ? THEN excluded.change_1h ELSE quotes.change_1h END,
   change_4h = CASE WHEN ? THEN excluded.change_4h ELSE quotes.change_4h END,
   sparkline = CASE WHEN ? THEN excluded.sparkline ELSE quotes.sparkline END,
   ext_session = CASE WHEN ? THEN excluded.ext_session ELSE quotes.ext_session END,
   ext_pct = CASE WHEN ? THEN excluded.ext_pct ELSE quotes.ext_pct END,
-  as_of = excluded.as_of`, symbolID, price, prev, d, w, m, h1, h4, sparkText, asOf, session, pct, flag, flag, flag, extFlag, extFlag)
+  as_of = excluded.as_of`, symbolID, price, prev, d, w, m, ytd, y1, h1, h4, sparkText, asOf, session, pct, flag, flag, flag, extFlag, extFlag)
 	return err
 }
 

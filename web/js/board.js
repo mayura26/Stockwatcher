@@ -272,6 +272,8 @@ class SwBoard extends HTMLElement {
           <span class="more-cell"><span class="chg-h">4H</span>${chg(row.change_4h)}</span>
           <span class="more-cell"><span class="chg-h">W</span>${chg(row.change_w)}</span>
           <span class="more-cell"><span class="chg-h">M</span>${chg(row.change_m)}</span>
+          <span class="more-cell"><span class="chg-h">YTD</span>${chg(row.change_ytd)}</span>
+          <span class="more-cell"><span class="chg-h">Y</span>${chg(row.change_1y)}</span>
         </div>${factsLine(row)}</div>` : '';
     const moves = this.editing && !fixed ? `<span class="row-edit">
           <button type="button" class="mini" data-move-symbol="${row.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>Up</button>
