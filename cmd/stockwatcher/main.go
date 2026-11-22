@@ -78,6 +78,11 @@ func serve() error {
 		return err
 	}
 	slog.Info("ranges", "updated", ranges)
+	averages, err := sy.RefreshAverages(ctx)
+	if err != nil {
+		return err
+	}
+	slog.Info("averages", "updated", averages)
 	go func() {
 		logoCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()

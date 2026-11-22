@@ -3,6 +3,7 @@ import './board.js';
 import './search.js';
 import './chart-view.js';
 import './alerts.js';
+import './settings.js';
 
 const TOKEN_KEY = 'sw.token';
 const GROUP_KEY = 'sw.group';
@@ -12,6 +13,7 @@ function parseRoute() {
   const chart = hash.match(/^#\/chart\/(\d+)/);
   if (chart) return { name: 'chart', id: Number(chart[1]) };
   if (hash.startsWith('#/alerts')) return { name: 'alerts' };
+  if (hash.startsWith('#/settings')) return { name: 'settings' };
   return { name: 'board' };
 }
 
@@ -115,11 +117,13 @@ class SwApp extends HTMLElement {
       <sw-board></sw-board>
       <sw-search hidden></sw-search>
       <sw-chart hidden></sw-chart>
-      <sw-alerts hidden></sw-alerts>`;
+      <sw-alerts hidden></sw-alerts>
+      <sw-settings hidden></sw-settings>`;
     const api = this.api;
     this.querySelector('sw-search').api = api;
     this.querySelector('sw-chart').api = api;
     this.querySelector('sw-alerts').api = api;
+    this.querySelector('sw-settings').api = api;
   }
 
   groupId() {
@@ -159,7 +163,7 @@ class SwApp extends HTMLElement {
       this.alerts = data.alerts || [];
     }
     if (!this.shell) return;
-    if (route.name === 'board' || route.name === 'chart') this.paintBoard();
+    this.paintBoard();
     if (route.name === 'chart') {
       this.querySelector('sw-chart').setLive(findRow(board, route.id));
       if (this.querySelector('sw-chart').symbolId === route.id) this.querySelector('sw-chart').loadAlerts();
@@ -196,18 +200,21 @@ class SwApp extends HTMLElement {
     const board = this.querySelector('sw-board');
     const chart = this.querySelector('sw-chart');
     const alerts = this.querySelector('sw-alerts');
+    const settings = this.querySelector('sw-settings');
     const search = this.querySelector('sw-search');
-    board.hidden = route.name === 'alerts';
-    if (route.name === 'chart') board.dataset.mode = 'chart';
+    const sub = route.name === 'chart' || route.name === 'alerts' || route.name === 'settings';
+    board.hidden = false;
+    if (sub) board.dataset.mode = route.name;
     else delete board.dataset.mode;
     const back = board.querySelector('[data-act="back"]');
-    if (back) back.hidden = route.name !== 'chart';
+    if (back) back.hidden = !sub;
     chart.hidden = route.name !== 'chart';
     alerts.hidden = route.name !== 'alerts';
+    settings.hidden = route.name !== 'settings';
     search.hidden = !(route.name === 'board' && this.searchOpen);
     this.toggleBanner();
     if (route.name !== 'chart') chart.close();
-    if (route.name === 'board' || route.name === 'chart') this.paintBoard();
+    this.paintBoard();
     if (route.name === 'chart') chart.open(route.id);
     if (route.name === 'alerts') {
       alerts.api = this.api;
@@ -216,6 +223,10 @@ class SwApp extends HTMLElement {
         this.alerts = data.alerts || [];
         this.paintAlerts();
       }).catch((err) => this.fail(err));
+    }
+    if (route.name === 'settings') {
+      settings.api = this.api;
+      settings.load().catch((err) => this.fail(err));
     }
     if (this.searchOpen && route.name === 'board') search.open();
     this.syncPoll();
@@ -267,6 +278,14 @@ class SwApp extends HTMLElement {
       case 'alerts':
         location.hash = '#/alerts';
         return;
+      case 'settings':
+        location.hash = '#/settings';
+        return;
+      case 'averages-saved': {
+        const chart = this.querySelector('sw-chart');
+        if (chart) chart.payload = null;
+        return;
+      }
       case 'open':
         location.hash = '#/chart/' + detail.id;
         return;

@@ -189,6 +189,9 @@ CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, symbol_id);
 	if err := s.ensureLogos(); err != nil {
 		return err
 	}
+	if err := s.ensureAverages(); err != nil {
+		return err
+	}
 	return s.ensureIntraday()
 }
 
@@ -1385,6 +1388,206 @@ ORDER BY s.id`)
 			return nil, err
 		}
 		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// AverageSetting is one of the three daily lines configured for every chart.
+type AverageSetting struct {
+	Slot   int    `json:"slot"`
+	Kind   string `json:"kind"`
+	Period int    `json:"period"`
+	Color  string `json:"color"`
+}
+
+// AverageState is the last daily bar a cached line was built from.
+// LastClose is stored so a same-day tail update recomputes the value.
+type AverageState struct {
+	Slot      int
+	Kind      string
+	Period    int
+	LastDay   string
+	LastClose float64
+}
+
+// AverageWork is one symbol that has daily bars, plus the cache state for each slot.
+type AverageWork struct {
+	SymbolID  int64
+	LastDay   string
+	LastClose float64
+	State     map[int]AverageState
+}
+
+// ensureAverages stores the three line settings and the precomputed daily values.
+func (s *Store) ensureAverages() error {
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS ma_settings (
+  slot INTEGER PRIMARY KEY CHECK (slot BETWEEN 1 AND 3),
+  kind TEXT NOT NULL CHECK (kind IN ('ema','sma')),
+  period INTEGER NOT NULL CHECK (period BETWEEN 2 AND 400),
+  color TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ma_state (
+  symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 3),
+  kind TEXT NOT NULL,
+  period INTEGER NOT NULL,
+  last_day TEXT NOT NULL,
+  last_close REAL NOT NULL,
+  PRIMARY KEY (symbol_id, slot)
+);
+CREATE TABLE IF NOT EXISTS ma_points (
+  symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 3),
+  day TEXT NOT NULL,
+  value REAL NOT NULL,
+  PRIMARY KEY (symbol_id, slot, day)
+);
+INSERT OR IGNORE INTO ma_settings(slot, kind, period, color) VALUES
+  (1, 'ema', 21, '#6e92d4'),
+  (2, 'ema', 50, '#5eaea4'),
+  (3, 'sma', 200, '#b196cc')`)
+	return err
+}
+
+func (s *Store) AverageSettings(ctx context.Context) ([]AverageSetting, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT slot, kind, period, color FROM ma_settings ORDER BY slot`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AverageSetting
+	for rows.Next() {
+		var line AverageSetting
+		if err := rows.Scan(&line.Slot, &line.Kind, &line.Period, &line.Color); err != nil {
+			return nil, err
+		}
+		out = append(out, line)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SaveAverageSettings(ctx context.Context, lines []AverageSetting) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO ma_settings(slot, kind, period, color) VALUES (?, ?, ?, ?)
+ON CONFLICT(slot) DO UPDATE SET kind = excluded.kind, period = excluded.period, color = excluded.color`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, line := range lines {
+		if _, err := stmt.ExecContext(ctx, line.Slot, line.Kind, line.Period, line.Color); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// AverageWork lists symbols that have daily bars. only limits the list to one id when it is not zero.
+func (s *Store) AverageWork(ctx context.Context, only int64) ([]AverageWork, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id,
+       COALESCE((SELECT b.day FROM bars b WHERE b.symbol_id = s.id ORDER BY b.day DESC LIMIT 1), ''),
+       COALESCE((SELECT b.close FROM bars b WHERE b.symbol_id = s.id ORDER BY b.day DESC LIMIT 1), 0)
+FROM symbols s
+WHERE EXISTS (SELECT 1 FROM bars b WHERE b.symbol_id = s.id)
+  AND (? = 0 OR s.id = ?)
+ORDER BY s.id`, only, only)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AverageWork
+	for rows.Next() {
+		var row AverageWork
+		if err := rows.Scan(&row.SymbolID, &row.LastDay, &row.LastClose); err != nil {
+			return nil, err
+		}
+		row.State = map[int]AverageState{}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	index := make(map[int64]int, len(out))
+	for i := range out {
+		index[out[i].SymbolID] = i
+	}
+	states, err := s.db.QueryContext(ctx, `
+SELECT symbol_id, slot, kind, period, last_day, last_close FROM ma_state
+WHERE (? = 0 OR symbol_id = ?)`, only, only)
+	if err != nil {
+		return nil, err
+	}
+	defer states.Close()
+	for states.Next() {
+		var id int64
+		var st AverageState
+		if err := states.Scan(&id, &st.Slot, &st.Kind, &st.Period, &st.LastDay, &st.LastClose); err != nil {
+			return nil, err
+		}
+		if i, ok := index[id]; ok {
+			out[i].State[st.Slot] = st
+		}
+	}
+	return out, states.Err()
+}
+
+// ReplaceAverage rewrites one cached line for a symbol.
+func (s *Store) ReplaceAverage(ctx context.Context, symbolID int64, slot int, kind string, period int, lastDay string, lastClose float64, points []market.AveragePoint) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM ma_points WHERE symbol_id = ? AND slot = ?`, symbolID, slot); err != nil {
+		return err
+	}
+	if len(points) > 0 {
+		stmt, err := tx.PrepareContext(ctx, `INSERT INTO ma_points(symbol_id, slot, day, value) VALUES (?, ?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, p := range points {
+			if p.Day == "" {
+				continue
+			}
+			if _, err := stmt.ExecContext(ctx, symbolID, slot, p.Day, p.Value); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO ma_state(symbol_id, slot, kind, period, last_day, last_close) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(symbol_id, slot) DO UPDATE SET
+  kind = excluded.kind,
+  period = excluded.period,
+  last_day = excluded.last_day,
+  last_close = excluded.last_close`, symbolID, slot, kind, period, lastDay, lastClose); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) AveragePoints(ctx context.Context, symbolID int64, slot int) ([]market.AveragePoint, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT day, value FROM ma_points WHERE symbol_id = ? AND slot = ? ORDER BY day`, symbolID, slot)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []market.AveragePoint
+	for rows.Next() {
+		var p market.AveragePoint
+		if err := rows.Scan(&p.Day, &p.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

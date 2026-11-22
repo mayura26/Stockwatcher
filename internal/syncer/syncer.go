@@ -347,7 +347,10 @@ func (s *Syncer) fetchAndStore(ctx context.Context, id int64, full bool) error {
 	if err := s.Store.UpsertBars(ctx, id, bars); err != nil {
 		return err
 	}
-	_, err = s.RefreshRanges(ctx)
+	if _, err := s.RefreshRanges(ctx); err != nil {
+		return err
+	}
+	_, err = s.RefreshSymbolAverages(ctx, id)
 	return err
 }
 
@@ -487,6 +490,10 @@ func (s *Syncer) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	averages, err := s.RefreshAverages(ctx)
+	if err != nil {
+		return err
+	}
 	facts, err := s.refreshStaleFact(ctx, symbols)
 	if err != nil {
 		if errors.Is(err, finnhub.ErrRateLimit) {
@@ -503,7 +510,7 @@ func (s *Syncer) Tick(ctx context.Context) error {
 			slog.Error("logo", "err", err)
 		}
 	}
-	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails, "ranges", ranges, "facts", facts, "logos", logos)
+	slog.Info("tick", "quotes", len(quotes), "pushed", pushed, "tails", tails, "ranges", ranges, "averages", averages, "facts", facts, "logos", logos)
 	return nil
 }
 
@@ -587,6 +594,55 @@ func (s *Syncer) RefreshRanges(ctx context.Context) (int, error) {
 			return n, err
 		}
 		n++
+	}
+	return n, nil
+}
+
+// RefreshAverages rebuilds cached daily EMA and SMA lines whose settings or
+// last daily close have changed. Unchanged symbols are left as stored.
+func (s *Syncer) RefreshAverages(ctx context.Context) (int, error) {
+	return s.refreshAverages(ctx, 0)
+}
+
+// RefreshSymbolAverages rebuilds the lines for one symbol after its daily bars change.
+func (s *Syncer) RefreshSymbolAverages(ctx context.Context, id int64) (int, error) {
+	return s.refreshAverages(ctx, id)
+}
+
+func (s *Syncer) refreshAverages(ctx context.Context, only int64) (int, error) {
+	settings, err := s.Store.AverageSettings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	work, err := s.Store.AverageWork(ctx, only)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, sym := range work {
+		if sym.LastDay == "" {
+			continue
+		}
+		var bars []market.Bar
+		loaded := false
+		for _, line := range settings {
+			st, ok := sym.State[line.Slot]
+			if ok && st.Kind == line.Kind && st.Period == line.Period && st.LastDay == sym.LastDay && st.LastClose == sym.LastClose {
+				continue
+			}
+			if !loaded {
+				bars, err = s.Store.Bars(ctx, sym.SymbolID)
+				if err != nil {
+					return n, err
+				}
+				loaded = true
+			}
+			points := market.MovingAverage(line.Kind, line.Period, bars)
+			if err := s.Store.ReplaceAverage(ctx, sym.SymbolID, line.Slot, line.Kind, line.Period, sym.LastDay, sym.LastClose, points); err != nil {
+				return n, err
+			}
+			n++
+		}
 	}
 	return n, nil
 }

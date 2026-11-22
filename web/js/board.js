@@ -60,6 +60,7 @@ class SwBoard extends HTMLElement {
           <div class="top-actions">
             <button type="button" class="text-btn" data-act="edit" aria-pressed="false">Edit</button>
             <button type="button" class="text-btn" data-act="alerts">Alerts</button>
+            <button type="button" class="text-btn" data-act="settings">Settings</button>
           </div>
         </div>
         <div class="groups" role="tablist"></div>
@@ -180,20 +181,42 @@ class SwBoard extends HTMLElement {
   }
 
   renderBody() {
-    if (this.view === 'all') {
+    if (this.usesFolds()) {
       this.querySelector('.cols').innerHTML = '';
-      this.renderAll(this.board);
+      this.renderFolds(this.foldGroups());
       return;
     }
     this.renderCols(this.group);
     this.renderRows(this.group);
   }
 
-  renderAll(board) {
+  usesFolds() {
+    return this.view === 'all' || this.group?.kind === 'notable';
+  }
+
+  foldGroups() {
+    const groups = (this.board?.groups || []).filter((g) => !g.synthetic);
+    if (this.view === 'all') return groups;
+    const notableIDs = new Set((this.group?.rows || []).map((row) => row.id));
+    const placed = new Set();
+    const folds = [];
+    for (const group of groups) {
+      const rows = (group.rows || []).filter((row) => notableIDs.has(row.id));
+      for (const row of rows) placed.add(row.id);
+      if (rows.length) folds.push({ ...group, rows });
+    }
+    const loose = (this.group?.rows || []).filter((row) => !placed.has(row.id));
+    if (loose.length) {
+      folds.push({ id: -2, name: 'Ungrouped', color: '#8aa0ae', icon: 'layers', rows: loose });
+    }
+    return folds;
+  }
+
+  renderFolds(groups) {
     const host = this.querySelector('.rows');
-    const groups = (board?.groups || []).filter((g) => !g.synthetic);
     if (!groups.length) {
-      host.innerHTML = '<p class="empty">Nothing in this group.</p>';
+      const copy = this.group?.kind === 'notable' ? emptyCopy(this.group) : 'Nothing in this group.';
+      host.innerHTML = `<p class="empty">${escapeHTML(copy)}</p>`;
       return;
     }
     host.innerHTML = groups.map((group) => {
@@ -589,7 +612,7 @@ class SwBoard extends HTMLElement {
       if (this.closedFolds.has(id)) this.closedFolds.delete(id);
       else this.closedFolds.add(id);
       saveFolds(this.closedFolds);
-      this.renderAll(this.board);
+      this.renderBody();
       return;
     }
     const open = event.target.closest('[data-open]');

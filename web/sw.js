@@ -1,4 +1,4 @@
-const CACHE = 'stockwatcher-v6';
+const CACHE = 'stockwatcher-v7';
 const SHELL = [
   '/',
   '/css/app.css',
@@ -10,6 +10,7 @@ const SHELL = [
   '/js/chart-view.js',
   '/js/search.js',
   '/js/alerts.js',
+  '/js/settings.js',
   '/manifest.webmanifest',
   '/pwa-192.png',
   '/pwa-512.png',

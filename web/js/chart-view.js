@@ -1,7 +1,23 @@
 import { alertDetail, crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, yahooQuoted } from './format.js';
 
 const RANGE_KEY = 'sw.range';
+const MA_KEY = 'sw.ma.visible';
 const RANGES = ['D', '3D', '1W', '1M', '3M', '6M', 'YTD', '1Y', '5Y'];
+
+function savedMA() {
+  const raw = localStorage.getItem(MA_KEY);
+  if (raw == null) return new Set([1, 2]);
+  const on = new Set();
+  for (const part of raw.split(',')) {
+    const n = Number(part);
+    if (n === 1 || n === 2 || n === 3) on.add(n);
+  }
+  return on;
+}
+
+function storeMA(on) {
+  localStorage.setItem(MA_KEY, [...on].sort((a, b) => a - b).join(','));
+}
 
 function savedRange() {
   const saved = localStorage.getItem(RANGE_KEY) || localStorage.getItem('sw.resolution');
@@ -34,6 +50,8 @@ class SwChart extends HTMLElement {
     this.repeat = 'once';
     this.mine = [];
     this.alertLines = [];
+    this.maSeries = [];
+    this.maOn = savedMA();
     this.previewPrice = null;
     this.previewLine = null;
     this.userRanged = false;
@@ -42,8 +60,16 @@ class SwChart extends HTMLElement {
       <div class="chart-screen">
         <div class="chart-id">
           <div class="ident">
-            <div class="sym"><span data-display></span><span class="yahoo-mark" data-yahoo hidden>Yahoo</span></div>
+            <div class="sym-line">
+              <div class="sym"><span data-display></span><span class="yahoo-mark" data-yahoo hidden>Yahoo</span></div>
+              <div class="seg chart-kind" role="group" aria-label="Chart style">
+                <button type="button" data-kind="line">Line</button>
+                <button type="button" data-kind="candle" aria-pressed="true">Candle</button>
+              </div>
+              <button type="button" class="text-btn chart-alert-btn" data-alert-open>Alerts</button>
+            </div>
             <div class="sub" data-name></div>
+            <div class="ma-toggles"></div>
           </div>
           <div class="px-block">
             <div class="px num" data-price></div>
@@ -55,10 +81,6 @@ class SwChart extends HTMLElement {
           </div>
         </div>
         <div class="toggles">
-          <div class="seg" role="group" aria-label="Chart style">
-            <button type="button" data-kind="line">Line</button>
-            <button type="button" data-kind="candle" aria-pressed="true">Candle</button>
-          </div>
           <div class="range-scroll">
             <div class="seg res" role="group" aria-label="Range">
               ${RANGES.map((range) => `<button type="button" data-range="${range}"${range === 'D' ? ' aria-pressed="true"' : ''}>${range}</button>`).join('')}
@@ -70,23 +92,31 @@ class SwChart extends HTMLElement {
           <div class="chart-load" data-load hidden><span></span></div>
         </div>
         <p class="chart-msg" data-msg></p>
-        <form class="alert-form">
-          <input name="level" inputmode="decimal" placeholder="Level" aria-label="Alert level">
-          <div class="seg" role="group" aria-label="Repeat">
-            <button type="button" data-repeat="once" aria-pressed="true">Once</button>
-            <button type="button" data-repeat="continuous" aria-pressed="false">Continuous</button>
+        <div class="chart-alert-mask" data-alert-sheet hidden>
+          <div class="search-sheet" role="dialog" aria-label="Alerts">
+            <div class="search-head">
+              <div class="sheet-title">Alerts</div>
+              <button type="button" class="text-btn" data-alert-close>Close</button>
+            </div>
+            <form class="alert-form">
+              <input name="level" inputmode="decimal" placeholder="Level" aria-label="Alert level">
+              <div class="seg" role="group" aria-label="Repeat">
+                <button type="button" data-repeat="once" aria-pressed="true">Once</button>
+                <button type="button" data-repeat="continuous" aria-pressed="false">Continuous</button>
+              </div>
+              <div class="seg" role="group" aria-label="Direction">
+                <button type="button" data-dir="above" aria-pressed="true">Cross up</button>
+                <button type="button" data-dir="below" aria-pressed="false">Cross down</button>
+              </div>
+              <button type="submit" class="text-btn">Set</button>
+            </form>
+            <form class="alert-form bracket-form" data-bracket>
+              <input name="percent" inputmode="decimal" placeholder="%" aria-label="Bracket percent">
+              <button type="submit" class="text-btn">Bracket</button>
+            </form>
+            <ul class="alert-rows alert-mini" data-alerts></ul>
           </div>
-          <div class="seg" role="group" aria-label="Direction">
-            <button type="button" data-dir="above" aria-pressed="true">Cross up</button>
-            <button type="button" data-dir="below" aria-pressed="false">Cross down</button>
-          </div>
-          <button type="submit" class="text-btn">Set</button>
-        </form>
-        <form class="alert-form bracket-form" data-bracket>
-          <input name="percent" inputmode="decimal" placeholder="%" aria-label="Bracket percent">
-          <button type="submit" class="text-btn">Bracket</button>
-        </form>
-        <ul class="alert-mini" data-alerts></ul>
+        </div>
       </div>`;
     this.querySelector('form').addEventListener('submit', (event) => {
       event.preventDefault();
@@ -123,6 +153,19 @@ class SwChart extends HTMLElement {
       this.syncPreviewLine();
     });
     this.addEventListener('click', (event) => {
+      if (event.target.closest('[data-alert-open]')) {
+        this.openAlertSheet();
+        return;
+      }
+      if (event.target.closest('[data-alert-close]') || event.target.matches('[data-alert-sheet]')) {
+        this.closeAlertSheet();
+        return;
+      }
+      const ma = event.target.closest('[data-ma]');
+      if (ma) {
+        this.toggleMA(Number(ma.dataset.ma));
+        return;
+      }
       const kind = event.target.closest('[data-kind]');
       if (kind && kind.dataset.kind !== this.kind) {
         this.kind = kind.dataset.kind;
@@ -216,6 +259,7 @@ class SwChart extends HTMLElement {
     const yahoo = this.querySelector('[data-yahoo]');
     if (yahoo) yahoo.hidden = !yahooQuoted(sym);
     this.querySelector('[data-name]').textContent = sym.name || '';
+    this.paintMA(this.payload?.averages || []);
     const px = this.querySelector('[data-price]');
     px.textContent = formatPrice(shown);
     px.className = 'px num ' + priceTone(change);
@@ -252,14 +296,16 @@ class SwChart extends HTMLElement {
       const data = await this.api.get('/api/alerts');
       this.mine = (data.alerts || []).filter((a) => a.symbol_id === this.symbolId);
       const host = this.querySelector('[data-alerts]');
-      host.innerHTML = this.mine.map((a) => `
+      host.innerHTML = this.mine.length ? this.mine.map((a) => `
         <li>
           <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${alertDetail(a)}</span></span>
           <span>
             ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
             <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>
           </span>
-        </li>`).join('');
+        </li>`).join('') : '<li class="alert-empty"><span class="sub">No alerts on this symbol.</span></li>';
+      const open = this.querySelector('[data-alert-open]');
+      if (open) open.innerHTML = this.mine.length ? 'Alerts<span class="dot" aria-label="alerts on this symbol"></span>' : 'Alerts';
       this.drawAlertLines();
     } catch (err) {
       /* the board banner reports this if the app action failed; a quiet chart still stands */
@@ -332,6 +378,7 @@ class SwChart extends HTMLElement {
     const last = bars[bars.length - 1].close;
     const format = priceFormat(last);
     this.withWindow(() => {
+      this.clearAverages();
       if (this.series) {
         this.chart.removeSeries(this.series);
         this.series = null;
@@ -363,10 +410,82 @@ class SwChart extends HTMLElement {
         secondsVisible: false,
       });
       if (kept) this.chart.timeScale().setVisibleLogicalRange(kept);
+      this.addAverages(LW, format);
     });
     if (!kept) this.fitWindow();
     this.drawAlertLines();
     this.syncPreviewLine();
+  }
+
+  paintMA(lines) {
+    const host = this.querySelector('.ma-toggles');
+    if (!host) return;
+    const next = lines || [];
+    const key = next.map((line) => `${line.slot}:${line.kind}:${line.period}:${line.color}`).join('|');
+    if (host.dataset.key !== key) {
+      host.dataset.key = key;
+      host.innerHTML = next.map((line) => {
+        const label = `${line.period} ${String(line.kind || '').toUpperCase()}`;
+        return `<button type="button" class="ma-chip" data-ma="${line.slot}"><span class="ma-swatch" style="background:${line.color}"></span>${label}</button>`;
+      }).join('');
+    }
+    this.syncPressed();
+  }
+
+  toggleMA(slot) {
+    if (slot !== 1 && slot !== 2 && slot !== 3) return;
+    if (this.maOn.has(slot)) this.maOn.delete(slot);
+    else this.maOn.add(slot);
+    storeMA(this.maOn);
+    this.syncPressed();
+    this.redrawAverages();
+  }
+
+  redrawAverages() {
+    if (!this.chart || !this.lw) return;
+    const bars = this.payload?.bars || [];
+    if (!bars.length) return;
+    const format = priceFormat(bars[bars.length - 1].close);
+    this.withWindow(() => {
+      this.clearAverages();
+      this.addAverages(this.lw, format);
+    });
+  }
+
+  clearAverages() {
+    if (this.chart) {
+      for (const series of this.maSeries || []) this.chart.removeSeries(series);
+    }
+    this.maSeries = [];
+  }
+
+  addAverages(LW, format) {
+    if (!this.chart) return;
+    for (const line of this.payload?.averages || []) {
+      if (!this.maOn.has(line.slot)) continue;
+      const data = (line.points || []).filter((point) => point && point.value != null && point.time != null);
+      if (!data.length) continue;
+      const series = this.chart.addSeries(LW.LineSeries, {
+        color: line.color,
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        priceFormat: format,
+      });
+      series.setData(data.map((point) => ({ time: point.time, value: point.value })));
+      this.maSeries.push(series);
+    }
+  }
+
+  openAlertSheet() {
+    const mask = this.querySelector('[data-alert-sheet]');
+    if (mask) mask.hidden = false;
+  }
+
+  closeAlertSheet() {
+    const mask = this.querySelector('[data-alert-sheet]');
+    if (mask) mask.hidden = true;
   }
 
   priceAt(point) {
@@ -388,16 +507,15 @@ class SwChart extends HTMLElement {
     for (const line of this.alertLines) this.series.removePriceLine(line);
     this.alertLines = [];
     const dashed = this.lw.LineStyle.Dashed;
-    const solid = this.lw.LineStyle.Solid;
     for (const a of this.mine || []) {
       const up = a.direction !== 'below';
       this.alertLines.push(this.series.createPriceLine({
         price: a.level,
-        color: up ? '#8eae8a' : '#c56b52',
+        color: up ? 'rgba(142, 174, 138, 0.45)' : 'rgba(197, 107, 82, 0.45)',
         lineWidth: 1,
-        lineStyle: a.repeat === 'continuous' ? dashed : solid,
+        lineStyle: dashed,
         axisLabelVisible: true,
-        title: up ? 'Up' : 'Down',
+        title: '',
       }));
     }
   }
@@ -413,11 +531,11 @@ class SwChart extends HTMLElement {
     }
     const opts = {
       price: this.previewPrice,
-      color: '#c6a15b',
+      color: 'rgba(198, 161, 91, 0.55)',
       lineWidth: 1,
       lineStyle: this.lw.LineStyle.Dashed,
       axisLabelVisible: true,
-      title: 'Alert',
+      title: '',
     };
     if (this.previewLine) this.previewLine.applyOptions(opts);
     else this.previewLine = this.series.createPriceLine(opts);
@@ -425,6 +543,7 @@ class SwChart extends HTMLElement {
 
   syncPressed() {
     for (const btn of this.querySelectorAll('[data-kind]')) btn.setAttribute('aria-pressed', btn.dataset.kind === this.kind ? 'true' : 'false');
+    for (const btn of this.querySelectorAll('[data-ma]')) btn.setAttribute('aria-pressed', this.maOn.has(Number(btn.dataset.ma)) ? 'true' : 'false');
     for (const btn of this.querySelectorAll('[data-range]')) btn.setAttribute('aria-pressed', btn.dataset.range === this.range ? 'true' : 'false');
     for (const btn of this.querySelectorAll('[data-dir]')) btn.setAttribute('aria-pressed', btn.dataset.dir === this.direction ? 'true' : 'false');
     for (const btn of this.querySelectorAll('[data-repeat]')) btn.setAttribute('aria-pressed', btn.dataset.repeat === this.repeat ? 'true' : 'false');
@@ -502,7 +621,10 @@ class SwChart extends HTMLElement {
     this.sizeChanged = false;
   }
 
-  close() { this.destroyChart(); }
+  close() {
+    this.closeAlertSheet();
+    this.destroyChart();
+  }
 
   destroyChart() {
     if (this.chart) {
@@ -511,6 +633,7 @@ class SwChart extends HTMLElement {
       this.series = null;
       this.alertLines = [];
       this.previewLine = null;
+      this.maSeries = [];
     }
   }
 

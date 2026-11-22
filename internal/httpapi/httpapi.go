@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/owned/{symbolId}", s.auth(s.unownSymbol))
 	mux.HandleFunc("GET /api/search", s.auth(s.search))
 	mux.HandleFunc("GET /api/bars", s.auth(s.bars))
+	mux.HandleFunc("GET /api/averages", s.auth(s.listAverages))
+	mux.HandleFunc("PUT /api/averages", s.auth(s.putAverages))
 	mux.HandleFunc("GET /api/alerts", s.auth(s.listAlerts))
 	mux.HandleFunc("POST /api/alerts", s.auth(s.createAlert))
 	mux.HandleFunc("POST /api/alerts/bracket", s.auth(s.createBracket))
@@ -430,10 +433,99 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 		}
 		candles = market.DailyCandles(sym.AssetClass, rng, bars, time.Now())
 	}
-	s.writeBars(w, r, sym, rng, candles)
+	averages, err := s.chartAverages(r.Context(), sym, candles)
+	if mapErr(w, err) {
+		return
+	}
+	s.writeBars(w, r, sym, rng, candles, averages)
 }
 
-func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, rng string, candles []market.Candle) {
+func (s *Server) chartAverages(ctx context.Context, sym store.Symbol, candles []market.Candle) ([]map[string]any, error) {
+	lines, err := s.Store.AverageSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		points, err := s.Store.AveragePoints(ctx, sym.ID, line.Slot)
+		if err != nil {
+			return nil, err
+		}
+		marks := market.AlignAverage(sym.AssetClass, candles, points)
+		if marks == nil {
+			marks = []market.AverageMark{}
+		}
+		out = append(out, map[string]any{
+			"slot":   line.Slot,
+			"kind":   line.Kind,
+			"period": line.Period,
+			"color":  line.Color,
+			"points": marks,
+		})
+	}
+	return out, nil
+}
+
+func (s *Server) listAverages(w http.ResponseWriter, r *http.Request) {
+	lines, err := s.Store.AverageSettings(r.Context())
+	if mapErr(w, err) {
+		return
+	}
+	if lines == nil {
+		lines = []store.AverageSetting{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+}
+
+func (s *Server) putAverages(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Lines []store.AverageSetting `json:"lines"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	lines, err := cleanAverages(body.Lines)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mapErr(w, s.Store.SaveAverageSettings(r.Context(), lines)) {
+		return
+	}
+	if _, err := s.Sync.RefreshAverages(r.Context()); mapErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+}
+
+func cleanAverages(lines []store.AverageSetting) ([]store.AverageSetting, error) {
+	if len(lines) != 3 {
+		return nil, errors.New("three lines are required")
+	}
+	seen := map[int]bool{}
+	out := make([]store.AverageSetting, 0, 3)
+	for _, line := range lines {
+		if line.Slot < 1 || line.Slot > 3 || seen[line.Slot] {
+			return nil, errors.New("slots must be 1, 2, and 3")
+		}
+		seen[line.Slot] = true
+		kind := strings.ToLower(strings.TrimSpace(line.Kind))
+		if kind != "ema" && kind != "sma" {
+			return nil, errors.New("kind must be ema or sma")
+		}
+		if line.Period < 2 || line.Period > 400 {
+			return nil, errors.New("period must be from 2 to 400")
+		}
+		color := strings.ToLower(strings.TrimSpace(line.Color))
+		if !knownColor(color) {
+			return nil, errors.New("unknown color")
+		}
+		out = append(out, store.AverageSetting{Slot: line.Slot, Kind: kind, Period: line.Period, Color: color})
+	}
+	return out, nil
+}
+
+func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, rng string, candles []market.Candle, averages []map[string]any) {
 	var price, changeD, extPct, change, base *float64
 	var extSession string
 	now := time.Now()
@@ -477,6 +569,7 @@ func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Sym
 		"change":      change,
 		"change_base": base,
 		"bars":        candles,
+		"averages":    averages,
 	})
 }
 
@@ -647,6 +740,15 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	return id, true
 }
 
+func knownColor(color string) bool {
+	switch color {
+	case "#c6a15b", "#8eae8a", "#c56b52", "#e8e0cc", "#8aa0ae", "#a35d6a", "#d4895c", "#a3ae62", "#5eaea4", "#6e92d4", "#b196cc", "#d08a9c":
+		return true
+	default:
+		return false
+	}
+}
+
 func cleanName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > 40 {
@@ -664,9 +766,7 @@ func cleanAppearance(color, icon string) (string, string, error) {
 	if icon == "" {
 		icon = "mark"
 	}
-	switch color {
-	case "#c6a15b", "#8eae8a", "#c56b52", "#e8e0cc", "#8aa0ae", "#a35d6a", "#d4895c", "#a3ae62", "#5eaea4", "#6e92d4", "#b196cc", "#d08a9c":
-	default:
+	if !knownColor(color) {
 		return "", "", errors.New("unknown color")
 	}
 	switch icon {

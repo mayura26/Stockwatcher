@@ -5,11 +5,6 @@ class SwAlerts extends HTMLElement {
     this.openSymbols = new Set();
     this.innerHTML = `
       <div class="alerts-screen">
-        <header class="top">
-          <button type="button" class="back" data-back>Back</button>
-          <div class="brand">Alerts</div>
-          <span></span>
-        </header>
         <div class="sheet-pad">
           <div class="push-row">
             <span class="push-actions">
@@ -27,7 +22,6 @@ class SwAlerts extends HTMLElement {
           <ul class="alert-list" data-list></ul>
         </div>
       </div>`;
-    this.querySelector('[data-back]').addEventListener('click', () => { location.hash = '#/'; });
     this.querySelector('.bracket-form').addEventListener('submit', (event) => {
       event.preventDefault();
       const percent = Number(new FormData(event.target).get('percent'));
