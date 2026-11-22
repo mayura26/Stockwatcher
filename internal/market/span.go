@@ -127,7 +127,117 @@ func ShapeSpan(span Span, bars []IntradayBar) []Candle {
 
 // DailyCandles slices stored sessions to the span and returns one candle per day.
 func DailyCandles(class, name string, bars []Bar, now time.Time) []Candle {
-	return Rollup(SliceDaily(class, name, bars, now), "D")
+	return FoldDaily(SliceDaily(class, name, bars, now), "D")
+}
+
+// candlePitch is the smallest gap, in pixels, that still reads as a candle.
+const candlePitch = 5
+
+// ShapeDaily slices a long range and folds it so candles stay readable.
+// The fold is D, 3S, W, or M. Shorter ranges stay one session per candle.
+func ShapeDaily(class, name string, bars []Bar, now time.Time, plotWidth int) ([]Candle, string) {
+	sliced := SliceDaily(class, name, bars, now)
+	fold := PickFold(name, sliced, plotWidth)
+	return FoldDaily(sliced, fold), fold
+}
+
+// PickFold chooses the finest grouping whose candles are at least candlePitch
+// pixels apart. A missing width, or a range below 6M, stays on daily candles.
+// Months are the coarsest fold even when the plot is still tight.
+func PickFold(name string, bars []Bar, plotWidth int) string {
+	if plotWidth <= 0 || !longRange(name) {
+		return "D"
+	}
+	for _, fold := range []string{"D", "3S", "W", "M"} {
+		n := len(FoldDaily(bars, fold))
+		if n == 0 || plotWidth/n >= candlePitch {
+			return fold
+		}
+	}
+	return "M"
+}
+
+func longRange(name string) bool {
+	switch name {
+	case "6M", "YTD", "1Y", "5Y":
+		return true
+	default:
+		return false
+	}
+}
+
+// FoldDaily groups sliced sessions. 3S takes three bars at a time from the
+// start of the slice. W and M use the same Monday and month buckets as Rollup.
+// A folded candle is dated on its last session so a daily average lands on
+// the close of that candle.
+func FoldDaily(bars []Bar, fold string) []Candle {
+	switch fold {
+	case "3S":
+		return foldSessions(bars, 3)
+	case "W", "M":
+		return foldCalendar(bars, fold)
+	default:
+		return Rollup(bars, "D")
+	}
+}
+
+func foldSessions(bars []Bar, n int) []Candle {
+	if n < 2 {
+		return Rollup(bars, "D")
+	}
+	out := make([]Candle, 0, len(bars)/n+1)
+	for i := 0; i < len(bars); i += n {
+		j := i + n
+		if j > len(bars) {
+			j = len(bars)
+		}
+		out = append(out, mergeBars(bars[i:j]))
+	}
+	return out
+}
+
+func foldCalendar(bars []Bar, resolution string) []Candle {
+	out := make([]Candle, 0, len(bars)/4+1)
+	index := map[string]int{}
+	for _, b := range bars {
+		key := bucket(b.Day, resolution)
+		i, ok := index[key]
+		if !ok {
+			index[key] = len(out)
+			out = append(out, mergeBars([]Bar{b}))
+			continue
+		}
+		c := &out[i]
+		if b.High > c.High {
+			c.High = b.High
+		}
+		if b.Low < c.Low {
+			c.Low = b.Low
+		}
+		c.Close = b.Close
+		c.Time = DayTime(b.Day)
+	}
+	return out
+}
+
+func mergeBars(bars []Bar) Candle {
+	last := bars[len(bars)-1]
+	c := Candle{
+		Time:  DayTime(last.Day),
+		Open:  bars[0].Open,
+		High:  bars[0].High,
+		Low:   bars[0].Low,
+		Close: last.Close,
+	}
+	for _, b := range bars[1:] {
+		if b.High > c.High {
+			c.High = b.High
+		}
+		if b.Low < c.Low {
+			c.Low = b.Low
+		}
+	}
+	return c
 }
 
 // SliceDaily returns the sessions shown for a daily span.

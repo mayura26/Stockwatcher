@@ -120,6 +120,49 @@ func TestBarsRange(t *testing.T) {
 		t.Fatalf("3M %+v want base %v", quarter, wantBase)
 	}
 
+	rec = get("&range=6M")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	var half struct {
+		Candle string `json:"candle"`
+		Bars   []struct {
+			Close float64 `json:"close"`
+		} `json:"bars"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &half); err != nil {
+		t.Fatal(err)
+	}
+	if half.Candle != "D" || len(half.Bars) != len(daily) {
+		t.Fatalf("6M daily %+v", half)
+	}
+
+	rec = get("&range=6M&w=320")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	var folded struct {
+		Candle string `json:"candle"`
+		Bars   []struct {
+			Close float64 `json:"close"`
+		} `json:"bars"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &folded); err != nil {
+		t.Fatal(err)
+	}
+	shaped, fold := market.ShapeDaily(market.Stock, "6M", daily, time.Now(), 320)
+	if fold != "3S" || folded.Candle != "3S" || len(folded.Bars) != len(shaped) || len(folded.Bars) >= len(half.Bars) {
+		t.Fatalf("6M fold %+v want %s x%d", folded, fold, len(shaped))
+	}
+	if folded.Bars[len(folded.Bars)-1].Close != shaped[len(shaped)-1].Close {
+		t.Fatalf("6M close %v", folded.Bars[len(folded.Bars)-1].Close)
+	}
+
+	rec = get("&range=6M&w=-1")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", rec.Code)
+	}
+
 	rec = get("&range=nope")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status %d", rec.Code)

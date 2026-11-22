@@ -398,6 +398,11 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 	if rng == "" {
 		rng = "D"
 	}
+	width, err := plotWidth(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	span, ok := market.LookupSpan(rng)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "range must be D, 3D, 1W, 1M, 3M, 6M, YTD, 1Y, or 5Y")
@@ -408,6 +413,7 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var candles []market.Candle
+	var candle string
 	if span.Intraday() {
 		candles, err = s.Sync.SpanCandles(r.Context(), sym.ID, rng)
 		if err != nil {
@@ -431,13 +437,25 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 		if mapErr(w, err) {
 			return
 		}
-		candles = market.DailyCandles(sym.AssetClass, rng, bars, time.Now())
+		candles, candle = market.ShapeDaily(sym.AssetClass, rng, bars, time.Now(), width)
 	}
 	averages, err := s.chartAverages(r.Context(), sym, candles)
 	if mapErr(w, err) {
 		return
 	}
-	s.writeBars(w, r, sym, rng, candles, averages)
+	s.writeBars(w, r, sym, rng, candle, candles, averages)
+}
+
+func plotWidth(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("w")
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, errors.New("w must be a width")
+	}
+	return n, nil
 }
 
 func (s *Server) chartAverages(ctx context.Context, sym store.Symbol, candles []market.Candle) ([]map[string]any, error) {
@@ -525,7 +543,7 @@ func cleanAverages(lines []store.AverageSetting) ([]store.AverageSetting, error)
 	return out, nil
 }
 
-func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, rng string, candles []market.Candle, averages []map[string]any) {
+func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Symbol, rng, candle string, candles []market.Candle, averages []map[string]any) {
 	var price, changeD, extPct, change, base *float64
 	var extSession string
 	now := time.Now()
@@ -553,7 +571,7 @@ func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Sym
 			base = &v
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"symbol": map[string]any{
 			"id":              sym.ID,
 			"display":         sym.Display,
@@ -570,7 +588,11 @@ func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Sym
 		"change_base": base,
 		"bars":        candles,
 		"averages":    averages,
-	})
+	}
+	if candle != "" {
+		body["candle"] = candle
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {

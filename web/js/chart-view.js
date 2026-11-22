@@ -201,6 +201,7 @@ class SwChart extends HTMLElement {
       if (del) this.dispatchEvent(new CustomEvent('sw-action', { bubbles: true, detail: { type: 'delete-alert', id: Number(del.dataset.deleteAlert) } }));
     });
     this.syncPressed();
+    this.observePlot();
   }
 
   async open(id) {
@@ -223,6 +224,7 @@ class SwChart extends HTMLElement {
       this.syncPressed();
     }
     if (!this.payload || this.payload.range !== this.range) await this.loadBars();
+    else if (this.foldStale()) await this.loadBars(true);
     else {
       this.applyHeader();
       await this.paint();
@@ -236,21 +238,36 @@ class SwChart extends HTMLElement {
     this.placeAddButton();
   }
 
-  async loadBars() {
-    this.setLoading(true);
-    this.setMsg('Loading history…');
+  async loadBars(quiet) {
+    const width = this.plotWidth();
+    const token = (this.loadToken = (this.loadToken || 0) + 1);
+    if (!quiet) {
+      this.setLoading(true);
+      this.setMsg('Loading history…');
+    }
     try {
-      this.payload = await this.api.get('/api/bars?id=' + this.symbolId + '&range=' + this.range);
+      let path = '/api/bars?id=' + this.symbolId + '&range=' + this.range;
+      if (width > 0) path += '&w=' + width;
+      const payload = await this.api.get(path);
+      if (token !== this.loadToken || !this.isConnected) return;
+      if (quiet && this.payload && payload.range === this.range && payload.candle === this.payload.candle) {
+        this.sentWidth = width;
+        return;
+      }
+      this.sentWidth = width;
+      if (quiet) this.userRanged = false;
+      this.payload = payload;
       const intra = intradayRange(this.range);
       if (this.chart && this.chartIntra !== intra) this.destroyChart();
       this.chartIntra = intra;
       this.applyHeader();
       this.setMsg(this.payload.bars?.length ? '' : 'No history yet.');
       await this.paint();
+      this.scheduleFoldCheck();
     } catch (err) {
-      this.setMsg(err.message);
+      if (token === this.loadToken) this.setMsg(err.message);
     } finally {
-      this.setLoading(false);
+      if (token === this.loadToken) this.setLoading(false);
     }
   }
 
@@ -273,7 +290,7 @@ class SwChart extends HTMLElement {
     ch.textContent = formatPct(change);
     ch.className = 'chg ' + pctClass(change);
     const span = this.querySelector('[data-span]');
-    if (span) span.textContent = this.range || '';
+    if (span) span.textContent = spanLabel(this.range, this.payload?.candle);
     const ext = this.querySelector('[data-ext]');
     const label = source.ext_session === 'pre' ? 'Pre' : source.ext_session === 'post' ? 'After' : '';
     if (label && source.ext_pct != null) {
@@ -715,11 +732,62 @@ class SwChart extends HTMLElement {
     this.placeAddButton();
   }
 
-  disconnectedCallback() { this.destroyChart(); }
+  plotWidth() {
+    const host = this.querySelector('.chart-host');
+    const hostWidth = host ? host.clientWidth : 0;
+    if (!hostWidth) return 0;
+    let scale = 64;
+    try {
+      const width = this.chart && this.chart.priceScale('right').width();
+      if (width > 0) scale = width;
+    } catch (err) {
+      /* the scale appears once the chart has painted */
+    }
+    return Math.max(0, Math.round(hostWidth - scale));
+  }
+
+  foldStale() {
+    if (!longRange(this.range)) return false;
+    const width = this.plotWidth();
+    return width > 0 && width !== this.sentWidth;
+  }
+
+  observePlot() {
+    const host = this.querySelector('.chart-host');
+    if (!host || typeof ResizeObserver === 'undefined') return;
+    this.plotObserver = new ResizeObserver(() => this.scheduleFoldCheck());
+    this.plotObserver.observe(host);
+  }
+
+  scheduleFoldCheck() {
+    if (!longRange(this.range) || this.hidden) return;
+    clearTimeout(this.plotTimer);
+    this.plotTimer = setTimeout(() => {
+      if (!this.isConnected || !this.symbolId || !longRange(this.range)) return;
+      const width = this.plotWidth();
+      if (width > 0 && width !== this.sentWidth) this.loadBars(true);
+    }, 200);
+  }
+
+  disconnectedCallback() {
+    clearTimeout(this.plotTimer);
+    if (this.plotObserver) this.plotObserver.disconnect();
+    this.destroyChart();
+  }
 }
 
 function intradayRange(range) {
   return range === 'D' || range === '3D' || range === '1W' || range === '1M';
+}
+
+function longRange(range) {
+  return range === '6M' || range === 'YTD' || range === '1Y' || range === '5Y';
+}
+
+function spanLabel(range, candle) {
+  const name = candle === '3S' ? '3-day' : candle === 'W' ? 'Week' : candle === 'M' ? 'Month' : '';
+  if (!name) return range || '';
+  return `${range} · ${name}`;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
