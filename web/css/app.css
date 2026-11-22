@@ -445,15 +445,15 @@ sw-settings:not([hidden]) { overflow: auto; }
   margin-top: 0.4rem;
   background: var(--line);
 }
-.range-tick, .range-zero {
+.range-cap, .range-zero {
   position: absolute;
-  top: -0.12rem;
-  width: 1px;
-  height: 0.59rem;
-  background: var(--muted);
+  top: -0.18rem;
+  width: 2px;
+  height: 0.71rem;
+  background: var(--ink);
   transform: translateX(-50%);
 }
-.range-zero { background: var(--ink); height: 0.72rem; top: -0.18rem; }
+.range-zero { width: 1px; height: 0.72rem; }
 .range-mark {
   position: absolute;
   top: 50%;

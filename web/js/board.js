@@ -821,9 +821,7 @@ function rangeMeter(row) {
   // A tenth past the day's move keeps the pointer off the cap. A -2% day draws ±2.2%.
   const scale = outside ? Math.abs(today) * 1.1 : expected;
   const at = (v) => ((v + scale) / (2 * scale)) * 100;
-  const bounds = outside
-    ? `<span class="range-tick" style="left:${at(-expected)}%"></span><span class="range-tick" style="left:${at(expected)}%"></span>`
-    : '';
+  const bounds = `<span class="range-cap" style="left:${at(-expected)}%"></span><span class="range-cap" style="left:${at(expected)}%"></span>`;
   const ticks = `${bounds}<span class="range-zero" style="left:${at(0)}%"></span>`;
   const tone = today > expected ? 'up' : today < -expected ? 'down' : '';
   return `<div class="range"><div class="range-scale num"><span>${formatPct(-scale)}</span><span>${formatPct(scale)}</span></div><div class="range-track">${ticks}<span class="range-mark ${tone}" style="left:${at(today)}%"></span></div></div>`;
