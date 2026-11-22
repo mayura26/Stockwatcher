@@ -89,7 +89,9 @@ class SwBoard extends HTMLElement {
     this.addEventListener('submit', (event) => this.onSubmit(event));
     this.querySelector('.rows').addEventListener('pointerdown', (event) => this.armDrag(event));
     this.onKey = (event) => {
-      if (event.key === 'Escape' && this.sheetOpen) this.closeGroupSheet();
+      if (event.key !== 'Escape') return;
+      if (this.sheetOpen) this.closeGroupSheet();
+      else this.clearRangeTips();
     };
     window.addEventListener('keydown', this.onKey);
   }
@@ -355,7 +357,7 @@ class SwBoard extends HTMLElement {
     const host = this.querySelector('.rows');
     const row = event.target.closest('.row');
     if (!row || !host?.contains(row)) return;
-    if (event.target.closest('.row-x, .row-edit, .own')) return;
+    if (event.target.closest('.row-x, .row-edit, .own, [data-range-tip]')) return;
     this.ateClick = false;
     this.drag = {
       pointerId: event.pointerId,
@@ -529,6 +531,13 @@ class SwBoard extends HTMLElement {
     return { ids, changed: changed && ids.length === rows.length };
   }
 
+  clearRangeTips() {
+    for (const open of this.querySelectorAll('[data-range-tip].is-on')) {
+      open.classList.remove('is-on');
+      open.setAttribute('aria-expanded', 'false');
+    }
+  }
+
   onClick(event) {
     if (this.ateClick) {
       this.ateClick = false;
@@ -536,6 +545,17 @@ class SwBoard extends HTMLElement {
       event.stopPropagation();
       return;
     }
+    const tip = event.target.closest('[data-range-tip]');
+    if (tip) {
+      const open = tip.classList.contains('is-on');
+      this.clearRangeTips();
+      if (!open) {
+        tip.classList.add('is-on');
+        tip.setAttribute('aria-expanded', 'true');
+      }
+      return;
+    }
+    this.clearRangeTips();
     if (event.target === this.querySelector('.group-mask')) {
       this.closeGroupSheet();
       return;
@@ -821,10 +841,19 @@ function rangeMeter(row) {
   // A tenth past the day's move keeps the pointer off the cap. A -2% day draws ±2.2%.
   const scale = outside ? Math.abs(today) * 1.1 : expected;
   const at = (v) => ((v + scale) / (2 * scale)) * 100;
-  const bounds = `<span class="range-cap" style="left:${at(-expected)}%"></span><span class="range-cap" style="left:${at(expected)}%"></span>`;
+  const lowLabel = formatPct(-expected);
+  const highLabel = formatPct(expected);
+  const dayLabel = formatPct(today);
+  const bounds = `${rangeLine('range-cap', at(-expected), lowLabel, `Expected move ${lowLabel}`)}${rangeLine('range-cap', at(expected), highLabel, `Expected move ${highLabel}`)}`;
   const ticks = `${bounds}<span class="range-zero" style="left:${at(0)}%"></span>`;
   const tone = today > expected ? 'up' : today < -expected ? 'down' : '';
-  return `<div class="range"><div class="range-scale num"><span>${formatPct(-scale)}</span><span>${formatPct(scale)}</span></div><div class="range-track">${ticks}<span class="range-mark ${tone}" style="left:${at(today)}%"></span></div></div>`;
+  const mark = rangeLine(`range-mark${tone ? ` ${tone}` : ''}`, at(today), dayLabel, `Today ${dayLabel}`);
+  return `<div class="range"><div class="range-scale num"><span>${formatPct(-scale)}</span><span>${formatPct(scale)}</span></div><div class="range-track">${ticks}${mark}</div></div>`;
+}
+
+function rangeLine(cls, at, label, name) {
+  const side = at <= 12 ? ' tip-start' : at >= 88 ? ' tip-end' : '';
+  return `<button type="button" class="${cls}${side}" style="left:${at}%" data-range-tip aria-expanded="false" aria-label="${escapeAttr(name)}"><span class="range-tip num">${escapeHTML(label)}</span></button>`;
 }
 
 function sparkline(values, change) {

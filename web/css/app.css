@@ -445,26 +445,63 @@ sw-settings:not([hidden]) { overflow: auto; }
   margin-top: 0.4rem;
   background: var(--line);
 }
-.range-cap, .range-zero {
+.range-zero {
   position: absolute;
   top: -0.18rem;
-  width: 2px;
-  height: 0.71rem;
+  width: 1px;
+  height: 0.72rem;
   background: var(--ink);
   transform: translateX(-50%);
 }
-.range-zero { width: 1px; height: 0.72rem; }
+.range-cap,
 .range-mark {
   position: absolute;
   top: 50%;
-  width: 2px;
-  height: 0.85rem;
-  margin-top: -0.425rem;
-  background: var(--brass);
-  transform: translateX(-50%);
+  z-index: 1;
+  width: 1.75rem;
+  height: 1.6rem;
+  transform: translate(-50%, -50%);
 }
-.range-mark.up { background: var(--up); }
-.range-mark.down { background: var(--down); }
+.range-cap::before,
+.range-mark::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  transform: translate(-50%, -50%);
+}
+.range-cap::before {
+  height: 0.71rem;
+  background: var(--ink);
+}
+.range-mark::before {
+  height: 0.85rem;
+  background: var(--brass);
+}
+.range-mark.up::before { background: var(--up); }
+.range-mark.down::before { background: var(--down); }
+.range-cap.is-on,
+.range-mark.is-on { z-index: 3; }
+.range-tip {
+  position: absolute;
+  bottom: calc(50% + 0.46rem);
+  left: 50%;
+  display: none;
+  padding: 0.08rem 0.3rem;
+  transform: translateX(-50%);
+  background: var(--raise);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 0.62rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.range-cap.is-on .range-tip,
+.range-mark.is-on .range-tip { display: block; }
+.tip-start .range-tip { left: 50%; transform: none; }
+.tip-end .range-tip { left: auto; right: 50%; transform: none; }
 .more-cell { display: flex; flex-direction: column; align-items: flex-end; flex: 1 1 0; min-width: 0; }
 .more-cell .chg { font-size: 0.68rem; white-space: nowrap; }
 .more-cell .chg-h { font-size: 0.62rem; }
