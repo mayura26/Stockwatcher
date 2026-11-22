@@ -56,7 +56,7 @@ class SwBoard extends HTMLElement {
       <header class="top">
         <div class="top-line">
           <button type="button" class="back-icon" data-act="back" aria-label="Back" hidden>${svg('<path d="M10.2 2.8 5 8l5.2 5.2"></path>')}</button>
-          <div class="brand">Stockwatcher</div>
+          <div class="brand"><img class="brand-mark" src="/pwa-192.png" alt="" width="28" height="28">Stockwatcher</div>
           <div class="top-actions">
             <button type="button" class="text-btn" data-act="edit" aria-pressed="false">Edit</button>
             <button type="button" class="text-btn" data-act="alerts">Alerts</button>
@@ -780,19 +780,29 @@ function sparkHit(row, editing) {
 function factsLine(row) {
   if (row.asset_class !== 'stock') return '';
   const next = formatDay(row.earnings_date);
-  const when = next && row.earnings_hour === 'bmo' ? ' · open' : next && row.earnings_hour === 'amc' ? ' · close' : '';
   const cells = [
     fact('Cap', formatCompact(row.market_cap)),
     fact('P/E', formatPE(row.pe_ttm)),
     fact('Rev', formatCompact(row.revenue_ttm)),
     fact('Earn', formatCompact(row.earnings_ttm)),
-    fact('Next', next ? next + when : ''),
+    fact('Next', next, next ? earningsWhen(row.earnings_hour) : ''),
   ];
   return `<div class="facts">${cells.join('')}</div>`;
 }
 
-function fact(label, value) {
-  return `<span class="fact"><span class="chg-h">${escapeHTML(label)}</span><span class="num">${escapeHTML(value || '—')}</span></span>`;
+function fact(label, value, extra = '') {
+  const shown = value ? escapeHTML(value) + extra : '—';
+  return `<span class="fact"><span class="chg-h">${escapeHTML(label)}</span><span class="num">${shown}</span></span>`;
+}
+
+function earningsWhen(hour) {
+  if (hour === 'bmo') return earnMark('Before the open', '<path d="M2.4 11.8h11.2"></path><path d="M4.6 11.8a3.4 3.4 0 0 0 6.8 0"></path><path d="M8 4.2v2.2"></path><path d="M4.4 6.1 5.8 7.5"></path><path d="M11.6 6.1 10.2 7.5"></path>');
+  if (hour === 'amc') return earnMark('After the close', '<path fill="currentColor" stroke="none" d="M14 8.5A6 6 0 1 1 7.5 2 4.7 4.7 0 0 0 14 8.5Z"></path>');
+  return '';
+}
+
+function earnMark(label, body) {
+  return `<span class="earn-when" role="img" aria-label="${label}">${svg(body)}</span>`;
 }
 
 function rangeMeter(row) {
