@@ -1,4 +1,4 @@
-import { alertDetail, crossLabel, formatPct, formatPrice, pctClass, priceFormat, priceTone, yahooQuoted } from './format.js';
+import { alertMarks, formatPct, formatPrice, pctClass, priceFormat, priceTone, yahooQuoted } from './format.js';
 
 const RANGE_KEY = 'sw.range';
 const MA_KEY = 'sw.ma.visible';
@@ -89,6 +89,7 @@ class SwChart extends HTMLElement {
         </div>
         <div class="chart-stage">
           <div class="chart-host"></div>
+          <button type="button" class="chart-add" data-chart-add hidden aria-label="Add alert">+</button>
           <div class="chart-load" data-load hidden><span></span></div>
         </div>
         <p class="chart-msg" data-msg></p>
@@ -153,6 +154,10 @@ class SwChart extends HTMLElement {
       this.syncPreviewLine();
     });
     this.addEventListener('click', (event) => {
+      if (event.target.closest('[data-chart-add]')) {
+        this.addFromChart();
+        return;
+      }
       if (event.target.closest('[data-alert-open]')) {
         this.openAlertSheet();
         return;
@@ -228,6 +233,7 @@ class SwChart extends HTMLElement {
   setLive(row) {
     this.live = row || null;
     if (this.payload) this.applyHeader();
+    this.placeAddButton();
   }
 
   async loadBars() {
@@ -297,8 +303,8 @@ class SwChart extends HTMLElement {
       this.mine = (data.alerts || []).filter((a) => a.symbol_id === this.symbolId);
       const host = this.querySelector('[data-alerts]');
       host.innerHTML = this.mine.length ? this.mine.map((a) => `
-        <li>
-          <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${alertDetail(a)}</span></span>
+        <li class="${a.status === 'triggered' ? 'is-triggered' : ''}">
+          ${alertMarks(a)}
           <span>
             ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
             <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>
@@ -520,7 +526,74 @@ class SwChart extends HTMLElement {
     }
   }
 
+  currentPrice() {
+    const sym = this.payload?.symbol || {};
+    const price = this.live?.price ?? sym.price;
+    if (price > 0) return Number(price);
+    const bars = this.payload?.bars || [];
+    const close = bars.length ? bars[bars.length - 1].close : null;
+    return close > 0 ? Number(close) : null;
+  }
+
+  addFromChart() {
+    const level = Number(levelInput(this.previewPrice));
+    if (!(level > 0)) return;
+    const now = Number(levelInput(this.currentPrice()));
+    if (!(now > 0)) {
+      this.setMsg('No current price yet.');
+      return;
+    }
+    if (level === now) {
+      this.setMsg('That level is the current price.');
+      return;
+    }
+    const direction = level > now ? 'above' : 'below';
+    this.setMsg('');
+    this.dispatchEvent(new CustomEvent('sw-action', {
+      bubbles: true,
+      detail: { type: 'set-alert', symbolId: this.symbolId, direction, repeat: this.repeat, level },
+    }));
+    this.previewPrice = null;
+    const input = this.querySelector('input[name="level"]');
+    if (input) input.value = '';
+    this.syncPreviewLine();
+  }
+
+  placeAddButton() {
+    const btn = this.querySelector('[data-chart-add]');
+    if (!btn) return;
+    const level = Number(levelInput(this.previewPrice));
+    const y = this.series && level > 0 && typeof this.series.priceToCoordinate === 'function'
+      ? this.series.priceToCoordinate(level)
+      : null;
+    if (y == null || !Number.isFinite(y)) {
+      btn.hidden = true;
+      if (level > 0 && this.chart && this.isConnected && !this.hidden && !this.chart.timeScale().width()) {
+        requestAnimationFrame(() => this.placeAddButton());
+      }
+      return;
+    }
+    const now = Number(levelInput(this.currentPrice()));
+    const down = now > 0 && level < now;
+    const up = now > 0 && level > now;
+    btn.hidden = false;
+    btn.classList.toggle('up', up);
+    btn.classList.toggle('down', down);
+    const name = down ? 'Cross down' : up ? 'Cross up' : 'Level is the current price';
+    btn.setAttribute('aria-label', up || down ? `${name} at ${formatPrice(level)}` : name);
+    let scale = 64;
+    try {
+      const width = this.chart.priceScale('right').width();
+      if (width > 0) scale = width;
+    } catch (err) {
+      /* the right scale is the usual place for the button */
+    }
+    btn.style.top = `${y}px`;
+    btn.style.right = `${scale + 4}px`;
+  }
+
   syncPreviewLine() {
+    this.placeAddButton();
     if (!this.series || !this.lw) return;
     if (!(this.previewPrice > 0)) {
       if (this.previewLine) {
@@ -564,6 +637,7 @@ class SwChart extends HTMLElement {
   bindTimeScale() {
     const scale = this.chart.timeScale();
     scale.subscribeVisibleLogicalRangeChange(() => {
+      this.placeAddButton();
       if (this.applyingWindow || this.holdingRange) return;
       this.rangeChanged = true;
       queueMicrotask(() => this.settleRange());
@@ -593,9 +667,11 @@ class SwChart extends HTMLElement {
     this.rangeChanged = false;
     if (ranged && !sized) {
       this.userRanged = true;
+      this.placeAddButton();
       return;
     }
     if (!this.userRanged) this.fitWindow();
+    else this.placeAddButton();
   }
 
   withWindow(fn) {
@@ -619,6 +695,7 @@ class SwChart extends HTMLElement {
     this.withWindow(() => this.chart.timeScale().fitContent());
     this.rangeChanged = false;
     this.sizeChanged = false;
+    this.placeAddButton();
   }
 
   close() {
@@ -635,6 +712,7 @@ class SwChart extends HTMLElement {
       this.previewLine = null;
       this.maSeries = [];
     }
+    this.placeAddButton();
   }
 
   disconnectedCallback() { this.destroyChart(); }

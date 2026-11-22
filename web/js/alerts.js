@@ -1,4 +1,4 @@
-import { alertDetail, crossLabel, formatPrice } from './format.js';
+import { alertMarks, formatPrice } from './format.js';
 
 class SwAlerts extends HTMLElement {
   connectedCallback() {
@@ -103,8 +103,8 @@ class SwAlerts extends HTMLElement {
           </summary>
           <ul class="alert-rows">
             ${group.alerts.map((a) => `
-              <li>
-                <span>${crossLabel(a.direction)} ${formatPrice(a.level)} <span class="sub">${escapeHTML(alertDetail(a))}</span></span>
+              <li class="${a.status === 'triggered' ? 'is-triggered' : ''}">
+                ${alertMarks(a)}
                 <span>
                   ${a.status === 'triggered' && a.repeat !== 'continuous' ? `<button type="button" class="mini" data-rearm="${a.id}">Rearm</button>` : ''}
                   <button type="button" class="mini danger" data-delete-alert="${a.id}">Delete</button>

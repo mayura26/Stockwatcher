@@ -84,6 +84,26 @@ export function alertDetail(alert) {
   return kind + repeatLabel(alert.repeat) + ' · ' + alert.status;
 }
 
+export function alertMarks(alert) {
+  const up = alert.direction !== 'below';
+  const direction = up
+    ? mark(crossLabel(alert.direction), 'dir up', '<path d="M8 12.8V3.6"></path><path d="M4.4 7 8 3.4 11.6 7"></path>')
+    : mark(crossLabel(alert.direction), 'dir down', '<path d="M8 3.2v9.2"></path><path d="M4.4 9 8 12.6 11.6 9"></path>');
+  const repeat = alert.repeat === 'continuous'
+    ? mark('continuous', '', '<path d="M11.6 5.8a3.8 3.8 0 0 0-6.8-1.4"></path><path d="M4.2 2.8v2.4h2.4"></path><path d="M4.4 10.2a3.8 3.8 0 0 0 6.8 1.4"></path><path d="M11.8 13.2V10.8H9.4"></path>')
+    : `<span class="alert-mark once" role="img" aria-label="once">1</span>`;
+  const bracket = alert.bracket_id
+    ? mark('bracket', '', '<path d="M6.4 3.2H3.8v9.6h2.6"></path><path d="M9.6 3.2h2.6v9.6H9.6"></path>')
+    : '';
+  const status = alert.status === 'triggered' ? 'triggered' : 'armed';
+  return `<span class="alert-main">${direction}<span class="num">${formatPrice(alert.level)}</span>${repeat}${bracket}<span class="sub">${status}</span></span>`;
+}
+
+function mark(label, cls, body) {
+  const extra = cls ? ' ' + cls : '';
+  return `<span class="alert-mark${extra}" role="img" aria-label="${label}"><svg viewBox="0 0 16 16" aria-hidden="true">${body}</svg></span>`;
+}
+
 export function priceFormat(price) {
   const abs = Math.abs(Number(price) || 0);
   let precision = 2;
