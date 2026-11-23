@@ -104,6 +104,13 @@ func (s *Server) board(w http.ResponseWriter, r *http.Request) {
 	if mapErr(w, err) {
 		return
 	}
+	now := time.Now()
+	for i := range board.Groups {
+		for j := range board.Groups[i].Rows {
+			row := &board.Groups[i].Rows[j]
+			row.Feed = market.Feed(row.AssetClass, row.ProviderSymbol, now)
+		}
+	}
 	writeJSON(w, http.StatusOK, board)
 }
 
@@ -578,6 +585,7 @@ func (s *Server) writeBars(w http.ResponseWriter, r *http.Request, sym store.Sym
 			"name":            sym.Name,
 			"asset_class":     sym.AssetClass,
 			"provider_symbol": sym.ProviderSymbol,
+			"feed":            market.Feed(sym.AssetClass, sym.ProviderSymbol, now),
 			"price":           price,
 			"change_d":        changeD,
 			"ext_session":     extSession,

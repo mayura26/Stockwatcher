@@ -370,6 +370,75 @@ func sessionForming(class string, now time.Time) bool {
 	return mins < 16*60
 }
 
+// Feed is "live" while a real-time session is printing, "delayed" while a Yahoo
+// session is printing, and empty when that session is closed. Crypto is always
+// live. A Finnhub US stock is live on weekdays from 04:00 to 20:00 ET. A Yahoo
+// future is delayed across the CME electronic session, Sunday 18:00 ET through
+// Friday 17:00 ET, and dark during the 17:00–18:00 halt. A Yahoo index or a
+// dotted listing is delayed on weekdays from 09:30 to 16:00 ET.
+func Feed(class, provider string, now time.Time) string {
+	switch class {
+	case Crypto:
+		return "live"
+	case Future:
+		if globexOpen(now) {
+			return "delayed"
+		}
+		return ""
+	case Stock:
+		if YahooIndex(provider) || strings.Contains(provider, ".") {
+			if cashOpen(now) {
+				return "delayed"
+			}
+			return ""
+		}
+		if stockTapeOpen(now) {
+			return "live"
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+func nyClock(now time.Time) (time.Weekday, int) {
+	t := now.In(newYork())
+	return t.Weekday(), t.Hour()*60 + t.Minute()
+}
+
+func stockTapeOpen(now time.Time) bool {
+	day, mins := nyClock(now)
+	if day == time.Saturday || day == time.Sunday {
+		return false
+	}
+	return mins >= 4*60 && mins < 20*60
+}
+
+func cashOpen(now time.Time) bool {
+	day, mins := nyClock(now)
+	if day == time.Saturday || day == time.Sunday {
+		return false
+	}
+	return mins >= 9*60+30 && mins < 16*60
+}
+
+// globexOpen is the electronic session shared by the curated CME list.
+// It opens Sunday at 18:00 ET and closes Friday at 17:00 ET, with a halt
+// from 17:00 to 18:00 on the weekdays in between.
+func globexOpen(now time.Time) bool {
+	day, mins := nyClock(now)
+	switch day {
+	case time.Saturday:
+		return false
+	case time.Sunday:
+		return mins >= 18*60
+	case time.Friday:
+		return mins < 17*60
+	default:
+		return mins < 17*60 || mins >= 18*60
+	}
+}
+
 // CompletedBars drops the in-progress session. bars must be ordered by day.
 // A closed session, including a weekend looking back at Friday, is kept whole.
 func CompletedBars(class string, bars []Bar, now time.Time) []Bar {

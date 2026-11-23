@@ -260,7 +260,7 @@ class SwBoard extends HTMLElement {
     const name = `<button type="button" class="card-name" data-expand="${row.id}" aria-expanded="${expanded}">
           ${this.avatarHTML(row)}
           <span class="ident">
-            <span class="sym">${escapeHTML(row.display)}${mark}</span>
+            <span class="sym">${escapeHTML(row.display)}${feedDot(row.feed)}${mark}</span>
             <span class="sub">${escapeHTML(row.name || '')}</span>
           </span>
         </button>`;
@@ -768,6 +768,12 @@ function monogram(display) {
   if (!s) return '·';
   if (s.length <= 3) return s;
   return s.slice(0, 1);
+}
+
+function feedDot(feed) {
+  if (feed !== 'live' && feed !== 'delayed') return '';
+  const label = feed === 'live' ? 'Live' : 'Delayed';
+  return `<span class="live-dot ${feed}" role="img" aria-label="${label}"></span>`;
 }
 
 function yahooMark(row) {

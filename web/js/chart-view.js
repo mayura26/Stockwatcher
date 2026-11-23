@@ -61,7 +61,7 @@ class SwChart extends HTMLElement {
         <div class="chart-id">
           <div class="ident">
             <div class="sym-line">
-              <div class="sym"><span data-display></span><span class="yahoo-mark" data-yahoo hidden>Yahoo</span></div>
+              <div class="sym"><span data-display></span><span class="live-dot" data-feed hidden role="img"></span><span class="yahoo-mark" data-yahoo hidden>Yahoo</span></div>
               <div class="seg chart-kind" role="group" aria-label="Chart style">
                 <button type="button" data-kind="line">Line</button>
                 <button type="button" data-kind="candle" aria-pressed="true">Candle</button>
@@ -279,6 +279,15 @@ class SwChart extends HTMLElement {
     const bars = this.payload?.bars || [];
     const shown = price ?? (bars.length ? bars[bars.length - 1].close : null);
     this.querySelector('[data-display]').textContent = sym.display || '';
+    const feed = this.live ? (this.live.feed || '') : (sym.feed || '');
+    const dot = this.querySelector('[data-feed]');
+    if (dot) {
+      const on = feed === 'live' || feed === 'delayed';
+      dot.hidden = !on;
+      dot.className = 'live-dot' + (on ? ' ' + feed : '');
+      if (on) dot.setAttribute('aria-label', feed === 'live' ? 'Live' : 'Delayed');
+      else dot.removeAttribute('aria-label');
+    }
     const yahoo = this.querySelector('[data-yahoo]');
     if (yahoo) yahoo.hidden = !yahooQuoted(sym);
     this.querySelector('[data-name]').textContent = sym.name || '';

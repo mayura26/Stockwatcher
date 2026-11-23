@@ -553,6 +553,7 @@ type Row struct {
 	EarningsDate   string    `json:"earnings_date,omitempty"`
 	EarningsHour   string    `json:"earnings_hour,omitempty"`
 	HasLogo        bool      `json:"has_logo,omitempty"`
+	Feed           string    `json:"feed,omitempty"`
 }
 
 type Group struct {

@@ -433,3 +433,43 @@ func TestSearchIndexes(t *testing.T) {
 		t.Fatal("YahooIndex")
 	}
 }
+
+func TestFeed(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(y int, m time.Month, d, hh, mm int) time.Time {
+		return time.Date(y, m, d, hh, mm, 0, 0, ny)
+	}
+	monday := func(hh, mm int) time.Time { return at(2024, 1, 8, hh, mm) }
+	cases := []struct {
+		class, provider, want string
+		now                   time.Time
+	}{
+		{Stock, "AAPL", "live", monday(9, 30)},
+		{Stock, "AAPL", "live", monday(4, 0)},
+		{Stock, "AAPL", "", monday(3, 59)},
+		{Stock, "AAPL", "", monday(20, 0)},
+		{Stock, "AAPL", "", at(2024, 1, 13, 12, 0)},
+		{Future, "ES=F", "", at(2024, 1, 12, 17, 0)},
+		{Future, "ES=F", "delayed", at(2024, 1, 12, 16, 59)},
+		{Future, "ES=F", "delayed", at(2024, 1, 14, 18, 0)},
+		{Future, "ES=F", "", at(2024, 1, 14, 17, 59)},
+		{Future, "ES=F", "", at(2024, 1, 11, 17, 30)},
+		{Future, "ES=F", "delayed", at(2024, 1, 11, 18, 0)},
+		{Crypto, "BTCUSDT", "live", at(2024, 1, 13, 3, 0)},
+		{Stock, "^VIX", "delayed", monday(9, 30)},
+		{Stock, "^VIX", "", monday(9, 29)},
+		{Stock, "^VIX", "", monday(16, 0)},
+		{Stock, "DX-Y.NYB", "delayed", monday(10, 0)},
+		{Stock, "005930.KS", "delayed", monday(9, 30)},
+		{Stock, "005930.KS", "", monday(8, 0)},
+		{"", "AAPL", "", monday(10, 0)},
+	}
+	for _, tc := range cases {
+		if got := Feed(tc.class, tc.provider, tc.now); got != tc.want {
+			t.Fatalf("Feed(%s %s %s) = %q, want %q", tc.class, tc.provider, tc.now.Format(time.RFC3339), got, tc.want)
+		}
+	}
+}
