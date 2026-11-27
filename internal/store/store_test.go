@@ -171,9 +171,10 @@ func TestNotableGroup(t *testing.T) {
 		}
 		return sym
 	}
-	quote := func(id int64, price float64, spark []float64) {
+	pct := func(v float64) *float64 { return &v }
+	quote := func(id int64, price float64, day *float64, spark []float64) {
 		t.Helper()
-		if err := st.UpsertQuote(ctx, id, price, nil, nil, nil, nil, nil, nil, nil, nil, spark, 1, true, "", nil, false); err != nil {
+		if err := st.UpsertQuote(ctx, id, price, nil, day, nil, nil, nil, nil, nil, nil, spark, 1, true, "", nil, false); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.UpsertRange(ctx, id, "2024-01-02", 10, 12, 1); err != nil {
@@ -183,14 +184,19 @@ func TestNotableGroup(t *testing.T) {
 	inside := add("IN")
 	spike := add("SP")
 	far := add("FAR")
-	quote(inside.ID, 11, []float64{11, 11.2})
-	quote(spike.ID, 11, []float64{11, 13})
-	quote(far.ID, 16, []float64{11, 11.4})
+	quiet := add("QUIET")
+	moved := add("MOVE")
+	// Band is 10–12, so the meter’s expected move is (12/11 - 1) * 100 ≈ 9.09%.
+	quote(inside.ID, 11, nil, []float64{11, 11.2})
+	quote(spike.ID, 11, nil, []float64{11, 13})
+	quote(far.ID, 16, nil, []float64{11, 11.4})
+	quote(quiet.ID, 16, pct(5), []float64{11, 13})
+	quote(moved.ID, 11, pct(20), []float64{11})
 	alertOnly := add("AL")
 	if err := st.RemoveFromGroup(ctx, gid, alertOnly.ID); err != nil {
 		t.Fatal(err)
 	}
-	quote(alertOnly.ID, 9, []float64{11})
+	quote(alertOnly.ID, 9, nil, []float64{11})
 	if _, err := st.CreateAlert(ctx, alertOnly.ID, "below", "once", 8); err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +213,11 @@ func TestNotableGroup(t *testing.T) {
 	for i, row := range notable.Rows {
 		got[i] = row.Display
 	}
-	// FAR is furthest past the band. SP and AL tie; SP was seen first.
-	want := []string{"FAR", "SP", "AL"}
+	// FAR is furthest past the dollar band. MOVE’s day percent is past the
+	// expected move while its price sits on the center. AL is just under.
+	// SP only left the band on a sparkline print, and QUIET’s day percent is
+	// inside, so both stay off.
+	want := []string{"FAR", "MOVE", "AL"}
 	if len(got) != len(want) {
 		t.Fatalf("notable %v", got)
 	}
@@ -218,7 +227,7 @@ func TestNotableGroup(t *testing.T) {
 		}
 	}
 	watch := groupNamed(t, board, "Watch")
-	if len(watch.Rows) != 3 {
+	if len(watch.Rows) != 5 {
 		t.Fatalf("watch %+v", watch.Rows)
 	}
 	var stamped Row

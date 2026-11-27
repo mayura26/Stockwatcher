@@ -674,10 +674,11 @@ ORDER BY g.position, g.id, gs.position, s.id`)
 	return board, nil
 }
 
-// notableGroup is the pinned list of watched names that have traded outside
-// the cached band. It is not a stored group. Watched names are the same set
-// the tick refreshes: anything on a board, an armed alert with no group, or
-// an owned name with no group.
+// notableGroup is the pinned list of watched names whose session move sits
+// outside the cached band, the same comparison the range meter draws. It is
+// not a stored group. Watched names are the same set the tick refreshes:
+// anything on a board, an armed alert with no group, or an owned name with
+// no group.
 func (s *Store) notableGroup(ctx context.Context, groups []Group, owned []Row) (Group, error) {
 	seen := map[int64]struct{}{}
 	var candidates []Row
@@ -889,6 +890,11 @@ func stampOwned(groups []Group, owned []Row) {
 	}
 }
 
+// outsideBand matches the range meter. change_d is that session percent, and
+// it decides membership when it is present. A missing day percent falls back
+// to the last price against the dollar band. Sparkline prints are not a
+// breach: once the band recenters on the session close, the path is measured
+// against that close and a quiet day still sticks out.
 func outsideBand(row Row) bool {
 	if row.RangeLow == nil || row.RangeHigh == nil {
 		return false
@@ -897,15 +903,10 @@ func outsideBand(row Row) bool {
 	if !(high > low) {
 		return false
 	}
-	if row.Price != nil && (*row.Price < low || *row.Price > high) {
-		return true
+	if row.ChangeD != nil {
+		return dayBeyond(row.ChangeD, low, high)
 	}
-	for _, p := range row.Sparkline {
-		if p < low || p > high {
-			return true
-		}
-	}
-	return dayBeyond(row.ChangeD, low, high)
+	return row.Price != nil && (*row.Price < low || *row.Price > high)
 }
 
 func dayBeyond(change *float64, low, high float64) bool {
@@ -926,45 +927,36 @@ func bandPercent(low, high float64) float64 {
 
 func excursion(row Row) float64 {
 	low, high := *row.RangeLow, *row.RangeHigh
-	width := high - low
-	if width <= 0 {
+	if !(high > low) {
 		return 0
-	}
-	best := 0.0
-	consider := func(p float64) {
-		var d float64
-		if p > high {
-			d = (p - high) / width
-		} else if p < low {
-			d = (low - p) / width
-		}
-		if d > best {
-			best = d
-		}
-	}
-	if row.Price != nil {
-		consider(*row.Price)
-	}
-	for _, p := range row.Sparkline {
-		consider(p)
 	}
 	if row.ChangeD != nil {
 		expected := bandPercent(low, high)
-		if expected > 0 {
-			over := *row.ChangeD
-			if over < 0 {
-				over = -over
-			}
-			over -= expected
-			if over > 0 {
-				d := over / (2 * expected)
-				if d > best {
-					best = d
-				}
-			}
+		if expected <= 0 {
+			return 0
 		}
+		over := *row.ChangeD
+		if over < 0 {
+			over = -over
+		}
+		over -= expected
+		if over <= 0 {
+			return 0
+		}
+		return over / (2 * expected)
 	}
-	return best
+	if row.Price == nil {
+		return 0
+	}
+	width := high - low
+	p := *row.Price
+	if p > high {
+		return (p - high) / width
+	}
+	if p < low {
+		return (low - p) / width
+	}
+	return 0
 }
 
 func decodeSpark(n sql.NullString) []float64 {
